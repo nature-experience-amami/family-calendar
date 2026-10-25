@@ -8,18 +8,35 @@ import {
   doc, collection, query, where, onSnapshot, getDoc, setDoc, addDoc, updateDoc, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 import { firebaseConfig, FAMILY_ID } from "./firebase-config.js";
+import { ICONS, iconSvg, isIcon } from "./icons.js";
 
+// 予定や送迎の担当は固定ID（father / mother / son / daughter）でひもづける。
+// 名前とアイコンは profiles に保存され、変えても予定はずれない。
 const MEMBERS = [
-  { id: "papa", name: "パパ" },
-  { id: "mama", name: "ママ" },
-  { id: "son", name: "長男" },
-  { id: "daughter", name: "長女" },
+  { id: "father", name: "父", icon: "sun" },
+  { id: "mother", name: "母", icon: "flower" },
+  { id: "son", name: "長男", icon: "fish" },
+  { id: "daughter", name: "長女", icon: "cat" },
 ];
-const DRIVERS = { papa: "パパ", mama: "ママ" };
+// 以前の版のID（papa / mama）で保存された予定も、そのまま読めるようにする
+const OLD_IDS = { papa: "father", mama: "mother" };
+const normId = (id) => OLD_IDS[id] || id;
 const LEG_NAME = { go: "行き", back: "帰り" };
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+const NAME_MAX = 10;
 
-const memberName = (id) => (MEMBERS.find((m) => m.id === id) || { name: "?" }).name;
+let profiles = {}; // Firestore の families/{FAMILY_ID}/profiles/{メンバーID}
+const profile = (id) => {
+  const base = MEMBERS.find((m) => m.id === id) || { name: "?", icon: "star" };
+  const p = profiles[id] || {};
+  return {
+    name: typeof p.name === "string" && p.name ? p.name : base.name,
+    icon: isIcon(p.icon) ? p.icon : base.icon,
+  };
+};
+const memberName = (id) => profile(id).name;
+// 文字数は Firestore のルールと同じ数え方（絵文字は2文字になることがある）
+const charCount = (s) => s.length;
 
 // ---------- Firebase ----------
 const app = initializeApp(firebaseConfig);
@@ -34,6 +51,7 @@ if (window.FAMILY_CALENDAR_EMULATOR) {
 }
 const memberRef = (uid) => doc(db, "families", FAMILY_ID, "members", uid);
 const eventsCol = collection(db, "families", FAMILY_ID, "events");
+const profilesCol = collection(db, "families", FAMILY_ID, "profiles");
 
 // ---------- 日付のヘルパー ----------
 const pad = (n) => String(n).padStart(2, "0");
@@ -45,9 +63,10 @@ const dateLabel = (s) => { const d = new Date(s + "T00:00"); return `${d.getMont
 
 // ---------- 状態 ----------
 let events = [];        // Firestore から届いた予定（今日以降）
-let me = null;          // 自分（papa / mama / son / daughter）
+let me = null;          // 自分（father / mother / son / daughter）
 let loaded = false;     // 最初の読み込みが終わったか
 let stopEvents = null;  // リアルタイム更新の停止用
+let stopProfiles = null;
 let subscribedDay = null;
 
 // ---------- 小さな部品 ----------
@@ -67,7 +86,18 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 const $ = (id) => document.getElementById(id);
-const label = (member) => h("span", { class: `label m-${member}` }, memberName(member));
+// その人の色の丸＋アイコン
+const avatar = (member, size = 32, iconId) => {
+  const el = h("span", { class: `avatar m-${member}`, style: `--size:${size}px` });
+  el.append(iconSvg(iconId || profile(member).icon, Math.round(size * 0.62)));
+  return el;
+};
+// 色ラベル（アイコン＋名前）
+const label = (member) => {
+  const el = h("span", { class: `label m-${member}` });
+  el.append(iconSvg(profile(member).icon, 16), memberName(member));
+  return el;
+};
 const timeText = (e) => (e.end ? `${e.start}〜${e.end}` : e.start);
 const byTime = (a, b) => (a.date === b.date ? toMinutes(a.start) - toMinutes(b.start) : a.date < b.date ? -1 : 1);
 const legs = (e) => (e.ride ? ["go", "back"].filter((k) => e.ride[k]) : []);
@@ -89,9 +119,11 @@ function saveError(err) {
 }
 
 // ---------- 送迎の担当を保存 ----------
+// 以前の版のID（papa / mama）が残っていたら、ついでに新しいIDに直して保存する
 function setDriver(e, key, driver) {
-  updateDoc(doc(eventsCol, e.id), { [`ride.${key}.driver`]: driver, updatedAt: serverTimestamp() })
-    .catch(saveError);
+  const patch = { member: e.member, [`ride.${key}.driver`]: driver, updatedAt: serverTimestamp() };
+  for (const k of legs(e)) if (k !== key) patch[`ride.${k}.driver`] = e.ride[k].driver;
+  updateDoc(doc(eventsCol, e.id), patch).catch(saveError);
 }
 
 // 送迎1件分の表示（未定＝黄色ボタン／確定＝グレー＋取り消し）
@@ -103,7 +135,7 @@ function rideRow(e, key) {
       h("span", { class: "ride-text" }, `${what}　誰が行く？`), "›");
   }
   return h("div", { class: "ride done" },
-    h("span", { class: "ride-text" }, `${what}　${DRIVERS[r.driver] || "?"}が行く ✓`),
+    h("span", { class: "ride-text" }, `${what}　${memberName(r.driver)}が行く ✓`),
     h("button", { class: "undo", type: "button", onclick: () => setDriver(e, key, null) }, "取り消し"));
 }
 
@@ -129,7 +161,8 @@ function viewWeek() {
   const today = ymd(now);
   const days = Array.from({ length: 7 }, (_, i) => addDays(now, i));
 
-  const head = h("tr", {}, h("th", { class: "day" }, ""), MEMBERS.map((m) => h("th", {}, label(m.id))));
+  const head = h("tr", {}, h("th", { class: "day" }, ""), MEMBERS.map((m) => h("th", { class: `m-${m.id}` },
+    h("div", { class: "who" }, avatar(m.id, 28), h("span", {}, memberName(m.id))))));
   const rows = days.map((d) => {
     const ds = ymd(d);
     const dow = d.getDay();
@@ -167,7 +200,7 @@ function viewFamily() {
       const nextEv = mine.find((e) => e !== nowEv &&
         (e.date > today || (e.date === today && toMinutes(e.start) > nm)));
       return h("section", { class: `member m-${m.id}` },
-        h("h3", {}, m.name),
+        h("h3", {}, avatar(m.id, 40), memberName(m.id)),
         slot("いま", nowEv, false),
         slot("つぎ", nextEv, nextEv && nextEv.date !== today));
     })),
@@ -180,6 +213,7 @@ let current = "today";
 const viewEl = $("view");
 
 function render() {
+  refreshNames();
   if (!me) return;
   // 日付が変わっていたら、読み込む範囲（今日以降）を取り直す
   if (subscribedDay !== ymd(new Date())) subscribeEvents();
@@ -199,7 +233,7 @@ function subscribeEvents() {
   subscribedDay = ymd(new Date());
   const q = query(eventsCol, where("date", ">=", subscribedDay));
   stopEvents = onSnapshot(q, (snap) => {
-    events = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    events = snap.docs.map((d) => normEvent({ id: d.id, ...d.data() }));
     loaded = true;
     render();
   }, (err) => {
@@ -207,6 +241,36 @@ function subscribeEvents() {
     viewEl.replaceChildren(h("p", { class: "empty" }, "予定を読み込めませんでした。家族グループへの参加をやり直してください。"));
     showJoin(true);
   });
+}
+
+function normEvent(e) {
+  e.member = normId(e.member);
+  for (const k of legs(e)) e.ride[k].driver = e.ride[k].driver ? normId(e.ride[k].driver) : null;
+  return e;
+}
+
+// 名前とアイコン：変わったら全員の画面にすぐ反映
+function subscribeProfiles() {
+  if (stopProfiles) return;
+  stopProfiles = onSnapshot(profilesCol, (snap) => {
+    profiles = {};
+    snap.forEach((d) => { profiles[d.id] = d.data(); });
+    render();
+    if (profileDialog.open) drawProfileEditor();
+  }, (err) => { console.error(err); stopProfiles = null; });
+}
+
+// 名前が出る場所のうち、作り直さないもの（ボタンなど）を更新
+function refreshNames() {
+  document.querySelectorAll(".chips").forEach((c) => c._refresh && c._refresh());
+  document.querySelectorAll(".btn.driver").forEach((b) => { b.textContent = `${memberName(b.dataset.driver)}が行く`; });
+  if (me) {
+    const btn = $("meBtn");
+    btn.hidden = false;
+    btn.className = `me m-${me}`;
+    btn.replaceChildren(avatar(me, 30), h("span", {}, memberName(me)), " ▾");
+    btn.setAttribute("aria-label", `いまは${memberName(me)}として使っています。メニューを開く`);
+  }
 }
 
 // ---------- 送迎の担当決め ----------
@@ -226,16 +290,25 @@ rideDialog.querySelectorAll(".driver").forEach((b) => b.addEventListener("click"
 $("cancelRide").addEventListener("click", () => rideDialog.close());
 
 // ---------- メンバーを選ぶボタン（追加画面・参加画面で共用） ----------
-function memberPicker(container, onPick) {
+// useDefault：参加前は家族の名前を読めないので、最初の呼び名（父・母・長男・長女）で出す
+function memberPicker(container, onPick, useDefault = false) {
   let picked = null;
   const set = (id) => {
     picked = id;
     container.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", String(c.dataset.member === id)));
     if (onPick) onPick(id);
   };
-  MEMBERS.forEach((m) => container.append(h("button", {
-    type: "button", class: `chip m-${m.id}`, "aria-pressed": "false", "data-member": m.id, onclick: () => set(m.id),
-  }, m.name)));
+  const draw = () => container.replaceChildren(...MEMBERS.map((m) => {
+    const p = useDefault ? m : profile(m.id);
+    const b = h("button", {
+      type: "button", class: `chip m-${m.id}`, "aria-pressed": String(picked === m.id), "data-member": m.id,
+      onclick: () => set(m.id),
+    });
+    b.append(iconSvg(p.icon, 18), h("span", {}, p.name));
+    return b;
+  }));
+  draw();
+  if (!useDefault) container._refresh = draw;
   return { get: () => picked, set };
 }
 
@@ -291,7 +364,7 @@ form.addEventListener("submit", (event) => {
 const joinScreen = $("joinScreen");
 const joinForm = $("joinForm");
 const joinErr = $("joinError");
-const joinPicker = memberPicker($("joinPicker"));
+const joinPicker = memberPicker($("joinPicker"), null, true);
 
 function showJoin(show, changing = false) {
   joinScreen.hidden = !show;
@@ -304,17 +377,88 @@ function showJoin(show, changing = false) {
 }
 
 function setMe(member) {
-  me = member;
-  const btn = $("meBtn");
-  btn.hidden = false;
-  btn.className = `me m-${me}`;
-  btn.textContent = `${memberName(me)} ▾`;
-  btn.setAttribute("aria-label", `いまは${memberName(me)}として使っています。変える`);
+  me = normId(member);
   showJoin(false);
+  subscribeProfiles();
   render();
 }
 
-$("meBtn").addEventListener("click", () => showJoin(true, true));
+// ---------- 右上のメニュー ----------
+const menuDialog = $("menuDialog");
+$("meBtn").addEventListener("click", () => {
+  $("menuTitle").textContent = `${memberName(me)}のメニュー`;
+  menuDialog.showModal();
+});
+$("openSwitchMe").addEventListener("click", () => { menuDialog.close(); showJoin(true, true); });
+$("openProfiles").addEventListener("click", () => { menuDialog.close(); openProfiles(me); });
+
+// ---------- 名前とアイコン ----------
+const profileDialog = $("profileDialog");
+const profileForm = $("profileForm");
+const profileMsg = $("profileError");
+let editing = null;     // 編集中の人
+let editingIcon = null; // 選んでいるアイコン
+
+function openProfiles(member) {
+  selectProfile(member || "father");
+  profileDialog.showModal();
+}
+
+function selectProfile(member) {
+  editing = member;
+  const p = profile(member);
+  editingIcon = p.icon;
+  profileForm.name.value = p.name;
+  profileMsg.className = "error";
+  profileMsg.textContent = "";
+  drawProfileEditor();
+}
+
+function drawProfileEditor() {
+  const color = `m-${editing}`;
+  $("whoTabs").replaceChildren(...MEMBERS.map((m) => {
+    const b = h("button", {
+      type: "button", class: `chip m-${m.id}`, "aria-pressed": String(m.id === editing), onclick: () => selectProfile(m.id),
+    });
+    b.append(iconSvg(profile(m.id).icon, 18), h("span", {}, memberName(m.id)));
+    return b;
+  }));
+  const typed = profileForm.name.value.trim();
+  $("profilePreview").className = `preview ${color}`;
+  $("profilePreview").replaceChildren(avatar(editing, 88, editingIcon), h("span", { class: "preview-name" }, typed || "　"));
+  $("iconGrid").className = `icon-grid ${color}`;
+  $("iconGrid").replaceChildren(...ICONS.map((icon) => {
+    const b = h("button", {
+      type: "button", class: "icon-choice", role: "radio", "aria-checked": String(icon.id === editingIcon),
+      "aria-label": icon.name, onclick: () => { editingIcon = icon.id; drawProfileEditor(); },
+    });
+    b.append(iconSvg(icon.id, 28), h("span", {}, icon.name));
+    return b;
+  }));
+}
+
+profileForm.name.addEventListener("input", () => {
+  const typed = profileForm.name.value.trim();
+  document.querySelector("#profilePreview .preview-name").textContent = typed || "　";
+});
+$("closeProfiles").addEventListener("click", () => profileDialog.close());
+
+profileForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const name = profileForm.name.value.trim();
+  profileMsg.className = "error";
+  if (!name) return void (profileMsg.textContent = "名前を入れてください");
+  if (charCount(name) > NAME_MAX) return void (profileMsg.textContent = `名前は${NAME_MAX}文字までです`);
+  const who = editing;
+  profileMsg.textContent = "";
+  // 電波が弱くても画面にはすぐ出て、つながったときに保存される
+  setDoc(doc(profilesCol, who), {
+    name, icon: editingIcon, updatedBy: auth.currentUser.uid, updatedAt: serverTimestamp(),
+  }).catch(saveError);
+  profileMsg.className = "ok";
+  profileMsg.textContent = `${name}を保存しました`;
+  drawProfileEditor();
+});
 $("joinCancel").addEventListener("click", () => showJoin(false));
 
 joinForm.addEventListener("submit", async (event) => {

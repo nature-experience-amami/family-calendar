@@ -14,7 +14,7 @@
   <header class="top">
     <div class="title-row">
       <h1 class="title">家族カレンダー</h1>
-      <button id="meBtn" class="me" type="button" hidden></button>
+      <button id="meBtn" class="me" type="button" aria-haspopup="dialog" hidden></button>
     </div>
     <nav class="tabs" role="tablist" aria-label="表示の切り替え">
       <button class="tab" role="tab" data-view="today" aria-selected="true">今日</button>
@@ -110,9 +110,43 @@
       <h2 id="rideTitle">誰が行く？</h2>
       <p id="rideInfo" class="ride-info"></p>
       <div class="actions column">
-        <button type="button" class="btn driver" data-driver="papa">パパが行く</button>
-        <button type="button" class="btn driver" data-driver="mama">ママが行く</button>
+        <button type="button" class="btn driver m-father" data-driver="father">父が行く</button>
+        <button type="button" class="btn driver m-mother" data-driver="mother">母が行く</button>
         <button type="button" id="cancelRide" class="btn ghost">やめる</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 右上の「自分」ボタンのメニュー -->
+  <dialog id="menuDialog" class="sheet">
+    <form method="dialog" class="menu">
+      <h2 id="menuTitle">メニュー</h2>
+      <div class="actions column">
+        <button type="button" id="openProfiles" class="btn">名前とアイコン</button>
+        <button type="button" id="openSwitchMe" class="btn">自分を変える</button>
+        <button type="submit" class="btn ghost">閉じる</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 名前とアイコン -->
+  <dialog id="profileDialog" class="sheet">
+    <form id="profileForm" novalidate>
+      <h2>名前とアイコン</h2>
+      <div id="whoTabs" class="who-tabs" role="group" aria-label="誰を変えるか"></div>
+      <div id="profilePreview" class="preview" aria-live="polite"></div>
+      <label class="field">
+        <span>名前（1〜10文字）</span>
+        <input name="name" type="text" required maxlength="10" autocomplete="off">
+      </label>
+      <fieldset>
+        <legend>アイコン</legend>
+        <div id="iconGrid" class="icon-grid" role="radiogroup" aria-label="アイコン"></div>
+      </fieldset>
+      <p id="profileError" class="error" role="alert"></p>
+      <div class="actions">
+        <button type="button" id="closeProfiles" class="btn ghost">閉じる</button>
+        <button type="submit" class="btn primary">保存する</button>
       </div>
     </form>
   </dialog>
