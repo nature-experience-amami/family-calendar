@@ -12,7 +12,10 @@
 </head>
 <body>
   <header class="top">
-    <h1 class="title">家族カレンダー</h1>
+    <div class="title-row">
+      <h1 class="title">家族カレンダー</h1>
+      <button id="meBtn" class="me" type="button" hidden></button>
+    </div>
     <nav class="tabs" role="tablist" aria-label="表示の切り替え">
       <button class="tab" role="tab" data-view="today" aria-selected="true">今日</button>
       <button class="tab" role="tab" data-view="week" aria-selected="false">週</button>
@@ -20,11 +23,34 @@
     </nav>
   </header>
 
-  <main id="view" class="view"></main>
+  <main id="view" class="view">
+    <p class="empty">読み込み中…</p>
+  </main>
 
-  <p class="note">仮データで動いています。追加した予定は再読み込みで消えます。</p>
+  <!-- 初回だけ：招待コードと自分を選ぶ -->
+  <section id="joinScreen" class="join" hidden>
+    <form id="joinForm">
+      <h2 id="joinTitle">家族グループに参加</h2>
+      <p class="join-lead">家族から教えてもらった招待コードを入れて、自分を選んでください。</p>
+      <label class="field">
+        <span>招待コード</span>
+        <input name="code" type="text" required autocomplete="off" autocapitalize="off" spellcheck="false">
+      </label>
+      <fieldset>
+        <legend>あなたは？</legend>
+        <div id="joinPicker" class="chips"></div>
+      </fieldset>
+      <p id="joinError" class="error" role="alert"></p>
+      <div class="actions">
+        <button type="button" id="joinCancel" class="btn ghost" hidden>やめる</button>
+        <button type="submit" class="btn primary">参加する</button>
+      </div>
+    </form>
+  </section>
 
-  <button id="addBtn" class="fab" aria-label="予定を追加">＋ 予定を追加</button>
+  <button id="addBtn" class="fab" aria-label="予定を追加" hidden>＋ 予定を追加</button>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <!-- 予定の追加 -->
   <dialog id="addDialog" class="sheet">
@@ -91,6 +117,6 @@
     </form>
   </dialog>
 
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

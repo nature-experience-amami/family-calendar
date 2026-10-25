@@ -1,0 +1,114 @@
+rules_version = '2';
+
+// 家族カレンダーのセキュリティルール
+//
+// データの置き場所
+//   families/{familyId}/private/invite   招待コード { code: "..." }（アプリからは読めない。Firebaseの画面で作る）
+//   families/{familyId}/members/{uid}    参加した端末 { member, inviteCode, joinedAt }
+//   families/{familyId}/events/{eventId} 予定と送迎の担当
+//
+// 招待コードが合っている端末だけが members に自分を登録でき、
+// members に登録された端末だけが予定を読み書きできる。
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isMember(familyId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/families/$(familyId)/members/$(request.auth.uid));
+    }
+
+    function inviteCodeOk(familyId, code) {
+      let invite = /databases/$(database)/documents/families/$(familyId)/private/invite;
+      return code is string
+        && exists(invite)
+        && get(invite).data.code == code;
+    }
+
+    function validMember(id) {
+      return id in ['papa', 'mama', 'son', 'daughter'];
+    }
+
+    function isTime(t) {
+      return t is string && t.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$');
+    }
+
+    function validLeg(leg) {
+      return leg is map
+        && leg.keys().hasOnly(['time', 'driver'])
+        && leg.keys().hasAll(['time', 'driver'])
+        && isTime(leg.time)
+        && (leg.driver == null || leg.driver in ['papa', 'mama']);
+    }
+
+    function validRide(ride) {
+      return ride == null
+        || (ride is map
+          && ride.keys().hasOnly(['go', 'back'])
+          && ride.size() > 0
+          && (!('go' in ride) || validLeg(ride.go))
+          && (!('back' in ride) || validLeg(ride.back)));
+    }
+
+    function validEvent(d) {
+      return d.keys().hasOnly(['member', 'title', 'date', 'start', 'end', 'ride', 'createdBy', 'createdAt', 'updatedAt'])
+        && d.keys().hasAll(['member', 'title', 'date', 'start', 'end', 'ride', 'createdBy', 'createdAt', 'updatedAt'])
+        && validMember(d.member)
+        && d.title is string && d.title.size() > 0 && d.title.size() <= 40
+        && d.date is string && d.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && isTime(d.start)
+        && (d.end == null || isTime(d.end))
+        && validRide(d.ride)
+        && d.updatedAt == request.time;
+    }
+
+    // 招待コード：アプリからは読み書きできない（ルールの中の get() だけが読む）
+    match /families/{familyId}/private/{doc} {
+      allow read, write: if false;
+    }
+
+    // 参加した端末
+    match /families/{familyId}/members/{uid} {
+      // 家族は全員分を読める。参加前の端末は、自分の分があるかどうかだけ確かめられる
+      allow read: if isMember(familyId) || (signedIn() && request.auth.uid == uid);
+
+      // 参加・自分が誰かの変更：自分の分だけ、正しい招待コード付きで
+      allow create, update: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['member', 'inviteCode', 'joinedAt'])
+        && request.resource.data.keys().hasAll(['member', 'inviteCode', 'joinedAt'])
+        && validMember(request.resource.data.member)
+        && request.resource.data.joinedAt is timestamp
+        && inviteCodeOk(familyId, request.resource.data.inviteCode);
+
+      // 抜けるのは自分だけ（ほかの端末を外すときは Firebase の画面で消す）
+      allow delete: if signedIn() && request.auth.uid == uid;
+    }
+
+    // 予定
+    match /families/{familyId}/events/{eventId} {
+      allow read: if isMember(familyId);
+
+      allow create: if isMember(familyId)
+        && validEvent(request.resource.data)
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time;
+
+      allow update: if isMember(familyId)
+        && validEvent(request.resource.data)
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt;
+
+      // 削除は今の画面に無いので、まだ許可しない
+      allow delete: if false;
+    }
+
+    // それ以外は全部だめ
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
