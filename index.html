@@ -58,7 +58,7 @@
 
   <!-- 予定の追加 -->
   <dialog id="addDialog" class="sheet">
-    <form id="addForm" method="dialog">
+    <form id="addForm" method="dialog" novalidate>
       <h2>予定を追加</h2>
 
       <fieldset>
@@ -77,8 +77,25 @@
           <input name="date" type="date" required>
         </label>
         <label class="field">
-          <span>時間</span>
-          <input name="start" type="time" required>
+          <span>終わりの日（任意）</span>
+          <input name="endDate" type="date">
+        </label>
+      </div>
+
+      <label class="switch">
+        <input id="allDayToggle" name="allDay" type="checkbox">
+        <span class="slider" aria-hidden="true"></span>
+        <span>終日</span>
+      </label>
+
+      <div id="timeFields" class="row">
+        <label class="field">
+          <span>開始時間</span>
+          <input name="start" type="time">
+        </label>
+        <label class="field">
+          <span>終了時間（任意）</span>
+          <input name="end" type="time">
         </label>
       </div>
 
@@ -90,12 +107,12 @@
 
       <div id="rideFields" class="ride-fields" hidden>
         <div class="row">
-          <label class="check"><input name="goOn" type="checkbox" checked> 行き</label>
-          <input name="goTime" type="time" aria-label="行きの時間">
+          <label class="check"><input name="goOn" type="checkbox" checked> 行き（送り）</label>
+          <input name="goTime" type="time" aria-label="送りの時間">
         </div>
         <div class="row">
-          <label class="check"><input name="backOn" type="checkbox" checked> 帰り</label>
-          <input name="backTime" type="time" aria-label="帰りの時間">
+          <label class="check"><input name="backOn" type="checkbox" checked> 帰り（お迎え）</label>
+          <input name="backTime" type="time" aria-label="お迎えの時間">
         </div>
       </div>
 

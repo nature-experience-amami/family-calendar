@@ -18,7 +18,11 @@
   - 今日：時間順の予定一覧（誰の予定かを色ラベルで表示）
   - 週：縦が曜日（今日から7日間）、横が家族4人の一覧表
   - 家族：4人のカードに「いま」と「つぎ」の予定
-- 予定の追加：「誰の・何・いつ」だけで保存。「送迎が必要」をオンにすると行き/帰りと時間を入力
+- 予定の追加：「誰の・何・いつ」だけで保存
+  - 「終日」をオンにすると時間なし。オフなら開始時間（必須）と終了時間（任意）。1日だけの予定で終了が開始より前なら保存できない
+  - 「終わりの日」（任意）で何日か続く予定（旅行・合宿など）。期間中の毎日に表示
+  - 「送迎が必要」をオンにすると行き（送り）/帰り（お迎え）と時間を入力。送りの初期値は開始時間、お迎えの初期値は終了時間
+- 一覧の時間は「終日」「9:00〜」「9:00〜15:00」のように入っている分だけ表示。終日の予定は時間付きより上
 - 送迎が未定の予定は黄色で「誰が行く？」。押すと「父が行く／母が行く」で確定（確定後はグレー、取り消しも可）
 - 右上の「自分」ボタンのメニュー
   - 名前とアイコン：4人それぞれの名前（1〜10文字）とアイコン（8種類）を変えられる。家族全員の画面にすぐ反映
@@ -46,7 +50,7 @@
 ```
 families/home/private/invite      招待コード { code }（アプリからは読めない）
 families/home/members/{端末のID}   参加した端末 { member, inviteCode, joinedAt }
-families/home/events/{予定のID}    予定 { member, title, date, start, end, ride, createdBy, createdAt, updatedAt }
+families/home/events/{予定のID}    予定 { member, title, date, endDate, allDay, start, end, ride, createdBy, createdAt, updatedAt }
 families/home/profiles/{father など} 名前とアイコン { name, icon, updatedBy, updatedAt }
 ```
 

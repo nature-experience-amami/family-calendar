@@ -349,3 +349,11 @@ legend, .field > span { font-size: 14px; color: var(--muted); margin-bottom: 6px
 .icon-choice[aria-checked="true"] { border-color: var(--c); background: color-mix(in srgb, var(--c) 12%, #fff); font-weight: 700; }
 .icon-choice:focus-visible, .chip:focus-visible, .btn:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .ok { color: var(--son); min-height: 1.5em; margin: 8px 0 0; font-size: 14px; }
+
+/* 終日・何日か続く予定 */
+.field { min-width: 0; }
+.check { min-width: 150px; flex: none; }
+.range { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.event.all-day .time { color: var(--c); }
+.mini.all-day { background: color-mix(in srgb, var(--c) 14%, #fff); }
+.mini.all-day.has-pending { background: var(--pending-bg); }

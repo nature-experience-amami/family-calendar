@@ -98,10 +98,48 @@ const label = (member) => {
   el.append(iconSvg(profile(member).icon, 16), memberName(member));
   return el;
 };
-const timeText = (e) => (e.end ? `${e.start}〜${e.end}` : e.start);
-const byTime = (a, b) => (a.date === b.date ? toMinutes(a.start) - toMinutes(b.start) : a.date < b.date ? -1 : 1);
 const legs = (e) => (e.ride ? ["go", "back"].filter((k) => e.ride[k]) : []);
-const hasPending = (e) => legs(e).some((k) => !e.ride[k].driver);
+
+// ---------- 予定の日時 ----------
+// 予定の項目：date（始まりの日）、endDate（終わりの日。1日だけなら null か無し）、
+// allDay（終日）、start（開始時間。終日なら null）、end（終了時間。無ければ null）
+// 以前の版の予定は allDay・endDate が無く、start だけ入っている。
+const showTime = (t) => t.replace(/^0(\d)/, "$1"); // 09:00 → 9:00
+const isAllDay = (e) => e.allDay === true || !e.start;
+const lastDay = (e) => (e.endDate && e.endDate > e.date ? e.endDate : e.date);
+const isMultiDay = (e) => lastDay(e) !== e.date;
+const onDay = (e, day) => e.date <= day && day <= lastDay(e);
+const rangeText = (e) => `${dateLabel(e.date)}〜${dateLabel(lastDay(e))}`;
+
+// その日の予定1件分（何日か続く予定は、日によって時間の出し方が変わる）
+//   text：「終日」「9:00〜」「9:00〜15:00」「〜10:00」
+//   from / to：その日の何分から何分まで（分からないときは null）
+function occurrence(e, day) {
+  const first = day === e.date;
+  const last = day === lastDay(e);
+  const o = { e, day, allDay: false, from: null, to: null, text: "" };
+  if (isAllDay(e) || (!first && !last) || (!first && last && !e.end)) {
+    o.allDay = true; o.from = 0; o.to = 24 * 60; o.text = "終日";
+  } else if (first) {
+    o.from = toMinutes(e.start);
+    o.to = last ? (e.end ? toMinutes(e.end) : null) : 24 * 60;
+    o.text = last && e.end ? `${showTime(e.start)}〜${showTime(e.end)}` : `${showTime(e.start)}〜`;
+  } else {
+    o.from = 0; o.to = toMinutes(e.end); o.text = `〜${showTime(e.end)}`;
+  }
+  // 送り（行き）は始まりの日、お迎え（帰り）は終わりの日に出す
+  o.legs = legs(e).filter((k) => (k === "go" ? first : last));
+  o.pending = o.legs.some((k) => !e.ride[k].driver);
+  return o;
+}
+
+// その日の予定を、終日→時間の早い順に並べる
+function dayList(day, member) {
+  return events
+    .filter((e) => onDay(e, day) && (!member || e.member === member))
+    .map((e) => occurrence(e, day))
+    .sort((a, b) => (b.allDay - a.allDay) || (a.from - b.from) || a.e.title.localeCompare(b.e.title, "ja"));
+}
 
 let toastTimer = null;
 function toast(msg) {
@@ -129,7 +167,7 @@ function setDriver(e, key, driver) {
 // 送迎1件分の表示（未定＝黄色ボタン／確定＝グレー＋取り消し）
 function rideRow(e, key) {
   const r = e.ride[key];
-  const what = `${LEG_NAME[key]} ${r.time}`;
+  const what = `${LEG_NAME[key]} ${showTime(r.time)}`;
   if (!r.driver) {
     return h("button", { class: "ride pending", type: "button", onclick: () => openRide(e, key) },
       h("span", { class: "ride-text" }, `${what}　誰が行く？`), "›");
@@ -142,15 +180,16 @@ function rideRow(e, key) {
 // ---------- 画面：今日 ----------
 function viewToday() {
   const today = ymd(new Date());
-  const list = events.filter((e) => e.date === today).sort(byTime);
+  const list = dayList(today);
   return [
     h("h2", {}, `${dateLabel(today)} の予定`),
     list.length
-      ? h("ul", { class: "list" }, list.map((e) =>
-          h("li", { class: `event m-${e.member}` },
-            h("div", { class: "event-head" }, h("span", { class: "time" }, timeText(e)), label(e.member)),
-            h("div", { class: "event-title" }, e.title),
-            legs(e).length ? h("div", { class: "rides" }, legs(e).map((k) => rideRow(e, k))) : null)))
+      ? h("ul", { class: "list" }, list.map((o) =>
+          h("li", { class: `event m-${o.e.member}${o.allDay ? " all-day" : ""}` },
+            h("div", { class: "event-head" }, h("span", { class: "time" }, o.text), label(o.e.member)),
+            h("div", { class: "event-title" }, o.e.title),
+            isMultiDay(o.e) ? h("div", { class: "range" }, rangeText(o.e)) : null,
+            o.legs.length ? h("div", { class: "rides" }, o.legs.map((k) => rideRow(o.e, k))) : null)))
       : h("p", { class: "empty" }, "今日の予定はありません"),
   ];
 }
@@ -170,10 +209,10 @@ function viewWeek() {
       h("th", { class: `day ${dow === 6 ? "sat" : dow === 0 ? "sun" : ""}`, scope: "row" },
         WEEKDAYS[dow], h("small", {}, `${d.getMonth() + 1}/${d.getDate()}`)),
       MEMBERS.map((m) => h("td", {},
-        events.filter((e) => e.date === ds && e.member === m.id).sort(byTime).map((e) =>
-          h("div", { class: `mini m-${e.member}${hasPending(e) ? " has-pending" : ""}` },
-            h("b", {}, e.start), " ", e.title,
-            hasPending(e) ? h("span", { class: "flag" }, "送迎 誰が行く？") : null)))));
+        dayList(ds, m.id).map((o) =>
+          h("div", { class: `mini m-${o.e.member}${o.allDay ? " all-day" : ""}${o.pending ? " has-pending" : ""}` },
+            h("b", {}, o.text), " ", o.e.title,
+            o.pending ? h("span", { class: "flag" }, "送迎 誰が行く？") : null)))));
   });
 
   return [
@@ -186,23 +225,30 @@ function viewWeek() {
 function viewFamily() {
   const today = ymd(new Date());
   const nm = nowMinutes();
-  const slot = (name, e, showDate) => h("div", { class: "slot" },
+  const slot = (name, timeLabel, e) => h("div", { class: "slot" },
     h("span", { class: "slot-name" }, name),
-    e ? h("span", {}, h("b", {}, `${showDate ? dateLabel(e.date) + " " : ""}${e.start}`), " ", e.title)
+    e ? h("span", {}, h("b", {}, timeLabel), " ", e.title)
       : h("span", { class: "slot-none" }, "予定なし"));
 
   return [
     h("h2", {}, "いま と つぎ の予定"),
     h("div", { class: "cards" }, MEMBERS.map((m) => {
-      const mine = events.filter((e) => e.member === m.id).sort(byTime);
-      const nowEv = mine.find((e) => e.date === today && e.end &&
-        toMinutes(e.start) <= nm && nm < toMinutes(e.end));
-      const nextEv = mine.find((e) => e !== nowEv &&
-        (e.date > today || (e.date === today && toMinutes(e.start) > nm)));
+      // いま：今日の予定のうち、いまの時刻が入っているもの（時間付きを優先）
+      const nowList = dayList(today, m.id).filter((o) => o.to != null && o.from <= nm && nm < o.to);
+      const nowOcc = nowList.find((o) => !o.allDay) || nowList[0];
+      // つぎ：これから始まる予定のうち、いちばん早いもの
+      const nextEv = events
+        .filter((e) => e.member === m.id && (e.date > today || (e.date === today && !isAllDay(e) && toMinutes(e.start) > nm)))
+        .sort((a, b) => (a.date === b.date
+          ? (isAllDay(b) - isAllDay(a)) || ((a.start ? toMinutes(a.start) : 0) - (b.start ? toMinutes(b.start) : 0))
+          : a.date < b.date ? -1 : 1))[0];
+      const nextLabel = nextEv
+        ? `${nextEv.date !== today ? dateLabel(nextEv.date) + " " : ""}${isAllDay(nextEv) ? "終日" : showTime(nextEv.start) + "〜"}`
+        : "";
       return h("section", { class: `member m-${m.id}` },
         h("h3", {}, avatar(m.id, 40), memberName(m.id)),
-        slot("いま", nowEv, false),
-        slot("つぎ", nextEv, nextEv && nextEv.date !== today));
+        slot("いま", nowOcc ? nowOcc.text : "", nowOcc && nowOcc.e),
+        slot("つぎ", nextLabel, nextEv));
     })),
   ];
 }
@@ -228,19 +274,33 @@ setInterval(render, 60 * 1000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) render(); });
 
 // ---------- リアルタイム更新 ----------
+// 今日以降に始まる予定と、前に始まって今日以降まで続く予定（旅行など）の2つを読んで合わせる
 function subscribeEvents() {
   if (stopEvents) stopEvents();
   subscribedDay = ymd(new Date());
-  const q = query(eventsCol, where("date", ">=", subscribedDay));
-  stopEvents = onSnapshot(q, (snap) => {
-    events = snap.docs.map((d) => normEvent({ id: d.id, ...d.data() }));
+  const parts = { starts: null, continues: null };
+  const merge = () => {
+    if (!parts.starts || !parts.continues) return;
+    const byId = new Map();
+    for (const list of [parts.starts, parts.continues]) for (const e of list) byId.set(e.id, e);
+    events = [...byId.values()];
     loaded = true;
     render();
-  }, (err) => {
+  };
+  const fail = (err) => {
     console.error(err);
     viewEl.replaceChildren(h("p", { class: "empty" }, "予定を読み込めませんでした。家族グループへの参加をやり直してください。"));
     showJoin(true);
-  });
+  };
+  const listen = (key, q) => onSnapshot(q, (snap) => {
+    parts[key] = snap.docs.map((d) => normEvent({ id: d.id, ...d.data() }));
+    merge();
+  }, fail);
+  const stops = [
+    listen("starts", query(eventsCol, where("date", ">=", subscribedDay))),
+    listen("continues", query(eventsCol, where("endDate", ">=", subscribedDay))),
+  ];
+  stopEvents = () => stops.forEach((stop) => stop());
 }
 
 function normEvent(e) {
@@ -279,7 +339,8 @@ let rideTarget = null;
 function openRide(e, key) {
   rideTarget = { e, key };
   $("rideTitle").textContent = `${LEG_NAME[key]}は誰が行く？`;
-  $("rideInfo").textContent = `${memberName(e.member)}の「${e.title}」 ${dateLabel(e.date)} ${e.ride[key].time}`;
+  const day = key === "go" ? e.date : lastDay(e);
+  $("rideInfo").textContent = `${memberName(e.member)}の「${e.title}」 ${dateLabel(day)} ${showTime(e.ride[key].time)}`;
   rideDialog.showModal();
 }
 rideDialog.querySelectorAll(".driver").forEach((b) => b.addEventListener("click", () => {
@@ -319,14 +380,56 @@ const addPicker = memberPicker($("memberPicker"));
 const rideToggle = $("rideToggle");
 const rideFields = $("rideFields");
 const errEl = $("formError");
+const allDayToggle = $("allDayToggle");
+const timeFields = $("timeFields");
 const leg = (time) => ({ time, driver: null });
 
-rideToggle.addEventListener("change", () => { rideFields.hidden = !rideToggle.checked; });
+// 送り・お迎えの時間の初期値：送り＝開始時間、お迎え＝終了時間（手で変えたら、それ以降は上書きしない）
+let goTouched = false;
+let backTouched = false;
+function syncRideTimes() {
+  if (allDayToggle.checked) return;
+  if (!goTouched && form.start.value) form.goTime.value = form.start.value;
+  if (!backTouched && form.end.value) form.backTime.value = form.end.value;
+}
+form.goTime.addEventListener("input", () => { goTouched = true; });
+form.backTime.addEventListener("input", () => { backTouched = true; });
+
+// 日時の確認（入力のたびと、保存のときに使う）
+function timeProblem() {
+  const date = form.date.value, endDate = form.endDate.value;
+  if (endDate && date && endDate < date) return "終わりの日を確認してください";
+  if (allDayToggle.checked) return "";
+  const start = form.start.value, end = form.end.value;
+  const oneDay = !endDate || endDate === date;
+  // 1日だけの予定で、終了時間が開始時間より前ならだめ（何日か続く予定は、終わりの日の時間なので比べない）
+  if (oneDay && start && end && end < start) return "終了時間を確認してください";
+  return "";
+}
+function onTimeInput() {
+  syncRideTimes();
+  errEl.textContent = timeProblem();
+}
+for (const name of ["date", "endDate", "start", "end"]) {
+  form[name].addEventListener("input", onTimeInput);
+  form[name].addEventListener("change", onTimeInput);
+}
+allDayToggle.addEventListener("change", () => {
+  timeFields.hidden = allDayToggle.checked;
+  onTimeInput();
+});
+rideToggle.addEventListener("change", () => {
+  rideFields.hidden = !rideToggle.checked;
+  syncRideTimes();
+});
 
 $("addBtn").addEventListener("click", () => {
   form.reset();
   addPicker.set(me);
   rideFields.hidden = true;
+  timeFields.hidden = false;
+  goTouched = false;
+  backTouched = false;
   errEl.textContent = "";
   form.date.value = ymd(new Date());
   addDialog.showModal();
@@ -338,7 +441,13 @@ form.addEventListener("submit", (event) => {
   const member = addPicker.get();
   const title = form.title.value.trim();
   if (!member) return void (errEl.textContent = "誰の予定かを選んでください");
-  if (!title || !form.date.value || !form.start.value) return void (errEl.textContent = "「何」と「いつ」を入れてください");
+  if (!title || !form.date.value) return void (errEl.textContent = "「何」と「いつ」を入れてください");
+  const allDay = allDayToggle.checked;
+  if (!allDay && !form.start.value) return void (errEl.textContent = "開始時間を入れてください（時間が無ければ「終日」をオン）");
+  const problem = timeProblem();
+  if (problem) return void (errEl.textContent = problem);
+  const date = form.date.value;
+  const endDate = form.endDate.value && form.endDate.value > date ? form.endDate.value : null;
 
   let ride = null;
   if (rideToggle.checked) {
@@ -354,7 +463,10 @@ form.addEventListener("submit", (event) => {
 
   // 電波が弱くても画面にはすぐ出て、つながったときに保存される
   addDoc(eventsCol, {
-    member, title, date: form.date.value, start: form.start.value, end: null, ride,
+    member, title, date, endDate, allDay,
+    start: allDay ? null : form.start.value,
+    end: allDay ? null : (form.end.value || null),
+    ride,
     createdBy: auth.currentUser.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
   }).catch(saveError);
   addDialog.close();
