@@ -228,7 +228,7 @@ function viewToday() {
     rows.length ? h("ul", { class: "upcoming" }, items) : h("p", { class: "empty" }, "これからの予定はありません"),
     upcomingMore
       ? h("button", { type: "button", class: "btn more", onclick: () => { upcomingLimit += UPCOMING_STEP; render(); } }, "もっと見る")
-      : null,
+      : rows.length ? h("p", { class: "the-end" }, "これより先の予定はありません") : null,
   ];
 }
 
@@ -353,7 +353,9 @@ function render() {
   refreshNames();
   if (!me) return;
   watchForView();
-  viewEl.replaceChildren(...(loaded ? [VIEWS[current]()].flat() : [h("p", { class: "empty" }, "読み込み中…")]));
+  // 画面の部品のうち「無し」（null・false など）は並べない（そのまま渡すと「null」と文字で出てしまう）
+  const parts = loaded ? [VIEWS[current]()].flat().filter((c) => c instanceof Node) : [h("p", { class: "empty" }, "読み込み中…")];
+  viewEl.replaceChildren(...parts);
   document.querySelectorAll(".tab").forEach((t) =>
     t.setAttribute("aria-selected", String(t.dataset.view === current)));
 }

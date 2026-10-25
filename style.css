@@ -414,3 +414,4 @@ legend, .field > span { font-size: 14px; color: var(--muted); margin-bottom: 6px
 .up-item .flag { grid-column: 3; color: var(--pending-text); font-size: 12px; font-weight: 700; }
 .up-item.has-pending { background: var(--pending-bg); }
 .more { width: 100%; margin-top: 10px; font-weight: 500; }
+.the-end { text-align: center; color: var(--muted); font-size: 12px; margin: 10px 0 0; }
