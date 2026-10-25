@@ -48,7 +48,7 @@ button, input { font: inherit; color: inherit; }
 
 .tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   background: var(--bg);
   border-radius: var(--radius);
   padding: 4px;
@@ -357,3 +357,60 @@ legend, .field > span { font-size: 14px; color: var(--muted); margin-bottom: 6px
 .event.all-day .time { color: var(--c); }
 .mini.all-day { background: color-mix(in srgb, var(--c) 14%, #fff); }
 .mini.all-day.has-pending { background: var(--pending-bg); }
+
+/* 前・次・戻る */
+.nav { display: grid; gap: 8px; margin-bottom: 12px; }
+.nav-row { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; }
+.view .nav-title { margin: 0; text-align: center; color: var(--text); font-weight: 700; font-size: 16px; }
+.nav-btn { padding: 0 12px; font-weight: 500; white-space: nowrap; }
+.nav-home { justify-self: center; font-weight: 500; }
+.nav-home:disabled { opacity: .4; cursor: default; }
+
+/* 月 */
+.month { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; background: var(--card); border-radius: var(--radius); padding: 8px; }
+.mhead { text-align: center; font-size: 12px; color: var(--muted); padding: 2px 0; }
+.mhead.sun, .mcell.sun .mnum { color: #dc2626; }
+.mhead.sat, .mcell.sat .mnum { color: var(--father); }
+.mcell {
+  position: relative;
+  min-height: 52px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--bg);
+  display: grid;
+  grid-template-rows: auto 1fr;
+  justify-items: center;
+  padding: 4px 2px;
+  cursor: pointer;
+}
+.mcell.blank { background: transparent; cursor: default; }
+.mcell.is-today .mnum { background: var(--text); color: #fff; border-radius: 999px; padding: 0 6px; }
+.mcell.is-selected { border-color: var(--text); background: var(--card); box-shadow: 0 1px 3px rgba(0, 0, 0, .15); }
+.mnum { font-size: 14px; font-weight: 700; line-height: 1.5; }
+.dots { display: flex; flex-wrap: wrap; justify-content: center; gap: 3px; align-self: end; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.mpending {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--pending-line);
+  color: var(--pending-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+.mcell .mpending { position: absolute; top: 2px; right: 2px; }
+.legend { font-size: 12px; color: var(--muted); margin: 8px 0 0; display: flex; align-items: center; gap: 4px; }
+.view .section-title { margin-top: 24px; }
+
+/* これからの予定 */
+.upcoming { list-style: none; margin: 0; padding: 0; background: var(--card); border-radius: var(--radius); overflow: hidden; }
+.up-date { background: var(--bg); color: var(--muted); font-size: 13px; font-weight: 700; padding: 6px 12px; }
+.up-item { display: grid; grid-template-columns: 76px 24px 1fr; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
+.up-item .time { font-size: 14px; }
+.up-title { min-width: 0; overflow-wrap: anywhere; }
+.up-title small { color: var(--muted); margin-left: 4px; }
+.up-item .flag { grid-column: 3; color: var(--pending-text); font-size: 12px; font-weight: 700; }
+.up-item.has-pending { background: var(--pending-bg); }
+.more { width: 100%; margin-top: 10px; font-weight: 500; }

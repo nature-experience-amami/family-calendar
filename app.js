@@ -5,7 +5,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator,
-  doc, collection, query, where, onSnapshot, getDoc, setDoc, addDoc, updateDoc, serverTimestamp,
+  doc, collection, query, where, orderBy, limit, onSnapshot, getDoc, setDoc, addDoc, updateDoc, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 import { firebaseConfig, FAMILY_ID } from "./firebase-config.js";
 import { ICONS, iconSvg, isIcon } from "./icons.js";
@@ -57,17 +57,17 @@ const profilesCol = collection(db, "families", FAMILY_ID, "profiles");
 const pad = (n) => String(n).padStart(2, "0");
 const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const shiftDay = (s, n) => ymd(addDays(new Date(s + "T00:00"), n)); // "2026-10-25" の n 日後
+const daysBetween = (a, b) => Math.round((new Date(b + "T00:00") - new Date(a + "T00:00")) / 86400000);
 const toMinutes = (hhmm) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + m; };
 const nowMinutes = () => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); };
 const dateLabel = (s) => { const d = new Date(s + "T00:00"); return `${d.getMonth() + 1}/${d.getDate()}(${WEEKDAYS[d.getDay()]})`; };
 
 // ---------- 状態 ----------
-let events = [];        // Firestore から届いた予定（今日以降）
+let events = [];        // Firestore から届いた予定（表示している期間の分）
 let me = null;          // 自分（father / mother / son / daughter）
 let loaded = false;     // 最初の読み込みが終わったか
-let stopEvents = null;  // リアルタイム更新の停止用
 let stopProfiles = null;
-let subscribedDay = null;
 
 // ---------- 小さな部品 ----------
 // 入力された文字は textContent で入れる（HTMLとして解釈させない）
@@ -177,33 +177,74 @@ function rideRow(e, key) {
     h("button", { class: "undo", type: "button", onclick: () => setDriver(e, key, null) }, "取り消し"));
 }
 
+// ---------- 予定カード（今日・月の下の一覧で共用） ----------
+function eventCard(o) {
+  return h("li", { class: `event m-${o.e.member}${o.allDay ? " all-day" : ""}` },
+    h("div", { class: "event-head" }, h("span", { class: "time" }, o.text), label(o.e.member)),
+    h("div", { class: "event-title" }, o.e.title),
+    isMultiDay(o.e) ? h("div", { class: "range" }, rangeText(o.e)) : null,
+    o.legs.length ? h("div", { class: "rides" }, o.legs.map((k) => rideRow(o.e, k))) : null);
+}
+const dayCards = (list, emptyText) => (list.length
+  ? h("ul", { class: "list" }, list.map(eventCard))
+  : h("p", { class: "empty" }, emptyText));
+
+// 前・次・戻るのボタン
+function navBar(title, prevText, nextText, backText, onMove, atHome) {
+  return h("div", { class: "nav" },
+    h("div", { class: "nav-row" },
+      h("button", { type: "button", class: "btn nav-btn", onclick: () => onMove(-1) }, `‹ ${prevText}`),
+      h("h2", { class: "nav-title" }, title),
+      h("button", { type: "button", class: "btn nav-btn", onclick: () => onMove(1) }, `${nextText} ›`)),
+    h("button", { type: "button", class: "btn nav-home", disabled: atHome, onclick: () => onMove(0) }, backText));
+}
+
 // ---------- 画面：今日 ----------
+const UPCOMING_STEP = 10;
+let upcomingLimit = UPCOMING_STEP;
+let upcoming = [];         // 明日以降の予定（日付順、最大 upcomingLimit 件）
+let upcomingMore = false;  // まだ先があるか
+
 function viewToday() {
   const today = ymd(new Date());
-  const list = dayList(today);
+  const rows = upcoming
+    .map((e) => occurrence(e, e.date))
+    .sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : (b.allDay - a.allDay) || (a.from - b.from)));
+  let lastDate = null;
+  const items = [];
+  for (const o of rows) {
+    if (o.day !== lastDate) { items.push(h("li", { class: "up-date" }, dateLabel(o.day))); lastDate = o.day; }
+    items.push(h("li", { class: `up-item m-${o.e.member}${o.pending ? " has-pending" : ""}` },
+      h("span", { class: "time" }, o.text),
+      avatar(o.e.member, 24),
+      h("span", { class: "up-title" }, o.e.title,
+        isMultiDay(o.e) ? h("small", {}, `〜${dateLabel(lastDay(o.e))}`) : null),
+      o.pending ? h("span", { class: "flag" }, "送迎 誰が行く？") : null));
+  }
   return [
     h("h2", {}, `${dateLabel(today)} の予定`),
-    list.length
-      ? h("ul", { class: "list" }, list.map((o) =>
-          h("li", { class: `event m-${o.e.member}${o.allDay ? " all-day" : ""}` },
-            h("div", { class: "event-head" }, h("span", { class: "time" }, o.text), label(o.e.member)),
-            h("div", { class: "event-title" }, o.e.title),
-            isMultiDay(o.e) ? h("div", { class: "range" }, rangeText(o.e)) : null,
-            o.legs.length ? h("div", { class: "rides" }, o.legs.map((k) => rideRow(o.e, k))) : null)))
-      : h("p", { class: "empty" }, "今日の予定はありません"),
+    dayCards(dayList(today), "今日の予定はありません"),
+    h("h2", { class: "section-title" }, "これからの予定"),
+    rows.length ? h("ul", { class: "upcoming" }, items) : h("p", { class: "empty" }, "これからの予定はありません"),
+    upcomingMore
+      ? h("button", { type: "button", class: "btn more", onclick: () => { upcomingLimit += UPCOMING_STEP; render(); } }, "もっと見る")
+      : null,
   ];
 }
 
-// ---------- 画面：週（縦＝曜日、横＝家族。今日から7日間） ----------
+// ---------- 画面：週（縦＝曜日、横＝家族。7日ずつ移動） ----------
+let weekOffset = 0; // 0＝今日から7日間、1＝その次の7日間…
+const weekStart = () => shiftDay(ymd(new Date()), weekOffset * 7);
+
 function viewWeek() {
-  const now = new Date();
-  const today = ymd(now);
-  const days = Array.from({ length: 7 }, (_, i) => addDays(now, i));
+  const today = ymd(new Date());
+  const start = weekStart();
+  const days = Array.from({ length: 7 }, (_, i) => shiftDay(start, i));
 
   const head = h("tr", {}, h("th", { class: "day" }, ""), MEMBERS.map((m) => h("th", { class: `m-${m.id}` },
     h("div", { class: "who" }, avatar(m.id, 28), h("span", {}, memberName(m.id))))));
-  const rows = days.map((d) => {
-    const ds = ymd(d);
+  const rows = days.map((ds) => {
+    const d = new Date(ds + "T00:00");
     const dow = d.getDay();
     return h("tr", { class: ds === today ? "is-today" : null },
       h("th", { class: `day ${dow === 6 ? "sat" : dow === 0 ? "sun" : ""}`, scope: "row" },
@@ -216,19 +257,69 @@ function viewWeek() {
   });
 
   return [
-    h("h2", {}, `${dateLabel(ymd(days[0]))} 〜 ${dateLabel(ymd(days[6]))}`),
+    navBar(`${dateLabel(days[0])} 〜 ${dateLabel(days[6])}`, "前の週", "次の週", "今日に戻る",
+      (n) => { weekOffset = n === 0 ? 0 : weekOffset + n; render(); }, weekOffset === 0),
     h("div", { class: "week-wrap" }, h("table", { class: "week" }, h("thead", {}, head), h("tbody", {}, rows))),
   ];
 }
 
+// ---------- 画面：月 ----------
+let monthOffset = 0;     // 0＝今月
+let selectedDay = null;  // 月の表示で押した日
+function monthRange() {
+  const now = new Date();
+  const first = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
+  return { first: ymd(first), last: ymd(last), year: first.getFullYear(), month: first.getMonth() + 1, lead: first.getDay(), days: last.getDate() };
+}
+
+function viewMonth() {
+  const today = ymd(new Date());
+  const r = monthRange();
+  if (!selectedDay || selectedDay < r.first || selectedDay > r.last) {
+    selectedDay = today >= r.first && today <= r.last ? today : r.first;
+  }
+  const cells = [];
+  for (let i = 0; i < r.lead; i++) cells.push(h("div", { class: "mcell blank", "aria-hidden": "true" }));
+  for (let n = 1; n <= r.days; n++) {
+    const ds = `${r.year}-${pad(r.month)}-${pad(n)}`;
+    const list = dayList(ds);
+    const who = MEMBERS.filter((m) => list.some((o) => o.e.member === m.id));
+    const pending = list.some((o) => o.pending);
+    const dow = (r.lead + n - 1) % 7;
+    const names = who.map((m) => memberName(m.id)).join("・");
+    cells.push(h("button", {
+      type: "button",
+      class: `mcell${ds === today ? " is-today" : ""}${ds === selectedDay ? " is-selected" : ""}${dow === 0 ? " sun" : dow === 6 ? " sat" : ""}`,
+      "aria-pressed": String(ds === selectedDay),
+      "aria-label": `${r.month}月${n}日${names ? "、" + names + "の予定" : "、予定なし"}${pending ? "、送迎が未定" : ""}`,
+      onclick: () => { selectedDay = ds; render(); },
+    },
+      h("span", { class: "mnum" }, n),
+      pending ? h("span", { class: "mpending", title: "送迎が未定" }, "!") : null,
+      h("span", { class: "dots" }, who.map((m) => h("span", { class: `dot m-${m.id}` })))));
+  }
+  return [
+    navBar(`${r.year}年${r.month}月`, "前の月", "次の月", "今月に戻る",
+      (n) => { monthOffset = n === 0 ? 0 : monthOffset + n; selectedDay = null; render(); }, monthOffset === 0),
+    h("div", { class: "month" },
+      WEEKDAYS.map((w, i) => h("div", { class: `mhead${i === 0 ? " sun" : i === 6 ? " sat" : ""}` }, w)),
+      cells),
+    h("p", { class: "legend" }, h("span", { class: "mpending" }, "!"), " は送迎が未定の予定がある日"),
+    h("h2", { class: "section-title" }, `${dateLabel(selectedDay)} の予定`),
+    dayCards(dayList(selectedDay), "この日の予定はありません"),
+  ];
+}
+
 // ---------- 画面：家族（いま／つぎ） ----------
+const FAMILY_DAYS = 60; // 「つぎ」を探す範囲（今日から何日先まで）
 function viewFamily() {
   const today = ymd(new Date());
   const nm = nowMinutes();
-  const slot = (name, timeLabel, e) => h("div", { class: "slot" },
+  const slot = (name, timeLabel, e, none = "予定なし") => h("div", { class: "slot" },
     h("span", { class: "slot-name" }, name),
     e ? h("span", {}, h("b", {}, timeLabel), " ", e.title)
-      : h("span", { class: "slot-none" }, "予定なし"));
+      : h("span", { class: "slot-none" }, none));
 
   return [
     h("h2", {}, "いま と つぎ の予定"),
@@ -248,59 +339,106 @@ function viewFamily() {
       return h("section", { class: `member m-${m.id}` },
         h("h3", {}, avatar(m.id, 40), memberName(m.id)),
         slot("いま", nowOcc ? nowOcc.text : "", nowOcc && nowOcc.e),
-        slot("つぎ", nextLabel, nextEv));
+        slot("つぎ", nextLabel, nextEv, `${FAMILY_DAYS}日先まで予定なし`));
     })),
   ];
 }
 
 // ---------- 表示の切り替え ----------
-const VIEWS = { today: viewToday, week: viewWeek, family: viewFamily };
+const VIEWS = { today: viewToday, week: viewWeek, month: viewMonth, family: viewFamily };
 let current = "today";
 const viewEl = $("view");
 
 function render() {
   refreshNames();
   if (!me) return;
-  // 日付が変わっていたら、読み込む範囲（今日以降）を取り直す
-  if (subscribedDay !== ymd(new Date())) subscribeEvents();
+  watchForView();
   viewEl.replaceChildren(...(loaded ? [VIEWS[current]()].flat() : [h("p", { class: "empty" }, "読み込み中…")]));
   document.querySelectorAll(".tab").forEach((t) =>
     t.setAttribute("aria-selected", String(t.dataset.view === current)));
 }
 document.querySelectorAll(".tab").forEach((t) =>
   t.addEventListener("click", () => { current = t.dataset.view; render(); }));
-// 「いま」の表示を1分ごとに更新・アプリに戻ったときも更新
+// 「いま」の表示を1分ごとに更新・アプリに戻ったときも更新（日付が変わったら読み込む範囲も変わる）
 setInterval(render, 60 * 1000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) render(); });
 
-// ---------- リアルタイム更新 ----------
-// 今日以降に始まる予定と、前に始まって今日以降まで続く予定（旅行など）の2つを読んで合わせる
-function subscribeEvents() {
-  if (stopEvents) stopEvents();
-  subscribedDay = ymd(new Date());
-  const parts = { starts: null, continues: null };
-  const merge = () => {
-    if (!parts.starts || !parts.continues) return;
-    const byId = new Map();
-    for (const list of [parts.starts, parts.continues]) for (const e of list) byId.set(e.id, e);
-    events = [...byId.values()];
-    loaded = true;
-    render();
+// ---------- 読み込み（表示している期間の分だけ・リアルタイム更新） ----------
+// 何日か続く予定の長さの上限。「終わりの日」がこの日数より先の予定は作れない。
+// （始まりの日が表示期間より前でも、終わりの日で探せば見つかるように、探す幅を決めておく）
+const SPAN_MAX = 62;
+let watching = {}; // 名前 → { key, stop, docs }
+
+// 表示している期間の予定を読む2つの問い合わせ
+//   starts：期間中に始まる予定
+//   continues：期間より前に始まって、期間中まで続く予定（終わりの日で探す）
+function rangeQueries(from, to) {
+  return {
+    starts: { key: `s|${from}|${to}`, q: () => query(eventsCol, where("date", ">=", from), where("date", "<=", to)) },
+    continues: {
+      key: `c|${from}|${to}`,
+      q: () => query(eventsCol, where("endDate", ">=", from), where("endDate", "<=", shiftDay(to, SPAN_MAX))),
+    },
   };
-  const fail = (err) => {
-    console.error(err);
-    viewEl.replaceChildren(h("p", { class: "empty" }, "予定を読み込めませんでした。家族グループへの参加をやり直してください。"));
-    showJoin(true);
+}
+
+function wantedForView() {
+  const today = ymd(new Date());
+  if (current === "week") return rangeQueries(weekStart(), shiftDay(weekStart(), 6));
+  if (current === "month") { const r = monthRange(); return rangeQueries(r.first, r.last); }
+  if (current === "family") return rangeQueries(today, shiftDay(today, FAMILY_DAYS));
+  return {
+    ...rangeQueries(today, today),
+    upcoming: {
+      key: `u|${today}|${upcomingLimit}`,
+      q: () => query(eventsCol, where("date", ">", today), orderBy("date"), limit(upcomingLimit)),
+    },
   };
-  const listen = (key, q) => onSnapshot(q, (snap) => {
-    parts[key] = snap.docs.map((d) => normEvent({ id: d.id, ...d.data() }));
-    merge();
-  }, fail);
-  const stops = [
-    listen("starts", query(eventsCol, where("date", ">=", subscribedDay))),
-    listen("continues", query(eventsCol, where("endDate", ">=", subscribedDay))),
-  ];
-  stopEvents = () => stops.forEach((stop) => stop());
+}
+
+function watchForView() {
+  const wanted = wantedForView();
+  let changed = false;
+  for (const name of Object.keys(watching)) {
+    if (!wanted[name] || wanted[name].key !== watching[name].key) {
+      watching[name].stop();
+      delete watching[name];
+      changed = true;
+    }
+  }
+  for (const [name, w] of Object.entries(wanted)) {
+    if (watching[name]) continue;
+    changed = true;
+    // 表示する期間が変わったときは、そろうまで「読み込み中」（「もっと見る」のときは今の表示を残す）
+    if (name !== "upcoming") loaded = false;
+    const entry = { key: w.key, docs: null };
+    entry.stop = onSnapshot(w.q(), (snap) => {
+      if (watching[name] !== entry) return; // もう使っていない問い合わせ
+      entry.docs = snap.docs.map((d) => normEvent({ id: d.id, ...d.data() }));
+      mergeWatched();
+    }, (err) => {
+      console.error(err);
+      viewEl.replaceChildren(h("p", { class: "empty" }, "予定を読み込めませんでした。家族グループへの参加をやり直してください。"));
+      showJoin(true);
+    });
+    watching[name] = entry;
+  }
+  if (changed) mergeWatched(false);
+}
+
+// 届いた分を合わせて画面へ（全部そろってから）
+function mergeWatched(draw = true) {
+  const all = Object.values(watching);
+  if (!all.length || all.some((w) => !w.docs)) return;
+  const byId = new Map();
+  for (const w of all) for (const e of w.docs) byId.set(e.id, e);
+  events = [...byId.values()];
+  if (watching.upcoming) {
+    upcoming = watching.upcoming.docs;
+    upcomingMore = upcoming.length >= upcomingLimit;
+  }
+  loaded = true;
+  if (draw) render();
 }
 
 function normEvent(e) {
@@ -399,6 +537,7 @@ form.backTime.addEventListener("input", () => { backTouched = true; });
 function timeProblem() {
   const date = form.date.value, endDate = form.endDate.value;
   if (endDate && date && endDate < date) return "終わりの日を確認してください";
+  if (endDate && date && daysBetween(date, endDate) > SPAN_MAX) return `終わりの日は${SPAN_MAX}日先までにしてください`;
   if (allDayToggle.checked) return "";
   const start = form.start.value, end = form.end.value;
   const oneDay = !endDate || endDate === date;
