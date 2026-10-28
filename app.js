@@ -55,6 +55,11 @@ const isOff = (member, day) => {
 };
 const offMembers = (day) => MEMBERS.filter((m) => isOff(m.id, day));
 const memberName = (id) => profile(id).name;
+const ALL_IDS = MEMBERS.map((m) => m.id);
+// 予定の人（複数人のことがある）。以前の版の予定は member（1人）だけ入っている
+const isEveryone = (e) => e.members.length === ALL_IDS.length;
+const whoText = (e) => (isEveryone(e) ? "全員" : e.members.map(memberName).join("・"));
+const whoClass = (e) => (e.members.length === 1 ? `m-${e.members[0]}` : "m-multi");
 // 文字数は Firestore のルールと同じ数え方（絵文字は2文字になることがある）
 const charCount = (s) => s.length;
 
@@ -159,7 +164,7 @@ function occurrence(e, day) {
 // その日の予定を、終日→時間の早い順に並べる
 function dayList(day, member) {
   return events
-    .filter((e) => onDay(e, day) && (!member || e.member === member))
+    .filter((e) => onDay(e, day) && (!member || e.members.includes(member)))
     .map((e) => occurrence(e, day))
     .sort((a, b) => (b.allDay - a.allDay) || (a.from - b.from) || a.e.title.localeCompare(b.e.title, "ja"));
 }
@@ -204,12 +209,13 @@ function repeatsOn(s, day) {
 }
 
 // くり返しの予定の、ある日の分（その日だけの変更を重ねる）。削除された日は null
-const OVERRIDE_FIELDS = ["member", "title", "allDay", "start", "end", "ride", "type", "name"];
+const OVERRIDE_FIELDS = ["member", "members", "title", "allDay", "start", "end", "ride", "type", "name"];
 function instanceOf(s, day) {
   const ov = overrides[`${s.id}_${day}`];
   if (ov && ov.cancelled) return null;
   const inst = { ...s, series: s, day, date: day, endDate: null };
   if (ov) for (const k of OVERRIDE_FIELDS) if (k in ov) inst[k] = ov[k];
+  if (ov && "member" in ov && !("members" in ov)) inst.members = [ov.member]; // 以前の版のその日だけの変更
   if (s.kind === "house") return inst;
   inst.allDay = inst.allDay === true;
   inst.start = inst.start || null;
@@ -284,10 +290,21 @@ function rideRow(e, key) {
     h("button", { class: "undo", type: "button", onclick: () => setDriver(e, key, null) }, "取り消し"));
 }
 
+// 予定の人の表示：1人なら色ラベル、複数ならアイコンを並べる、全員なら「全員」
+function whoLabel(e) {
+  if (e.members.length === 1) return label(e.members[0]);
+  if (isEveryone(e)) return h("span", { class: "label m-multi" }, "全員");
+  return whoIcons(e, 24);
+}
+function whoIcons(e, size) {
+  if (isEveryone(e) && size < 24) return h("span", { class: "label m-multi all-small" }, "全員");
+  return h("span", { class: "who-icons", "aria-label": whoText(e), title: whoText(e) }, e.members.map((id) => avatar(id, size)));
+}
+
 // ---------- 予定カード（今日・月の下の一覧で共用） ----------
 function eventCard(o) {
-  return h("li", { class: `event m-${o.e.member}${o.allDay ? " all-day" : ""}` },
-    h("div", { class: "event-head" }, h("span", { class: "time" }, o.text), label(o.e.member),
+  return h("li", { class: `event ${whoClass(o.e)}${o.allDay ? " all-day" : ""}` },
+    h("div", { class: "event-head" }, h("span", { class: "time" }, o.text), whoLabel(o.e),
       isSeries(o.e) ? repeatMark() : null,
       h("button", { type: "button", class: "edit-btn", onclick: () => openEditor(o.e, o.day), "aria-label": `「${o.e.title}」を編集` }, "編集")),
     h("div", { class: "event-title" }, o.e.title),
@@ -358,11 +375,11 @@ function viewToday() {
   for (const o of rows) {
     if (o.day !== lastDate) { items.push(h("li", { class: "up-date" }, dateLabel(o.day))); lastDate = o.day; }
     items.push(h("li", {}, h("button", {
-      type: "button", class: `up-item m-${o.e.member}${o.pending ? " has-pending" : ""}`,
+      type: "button", class: `up-item ${whoClass(o.e)}${o.pending ? " has-pending" : ""}`,
       onclick: () => openEditor(o.e, o.day),
     },
       h("span", { class: "time" }, o.text),
-      avatar(o.e.member, 24),
+      o.e.members.length === 1 ? avatar(o.e.member, 24) : whoIcons(o.e, 20),
       h("span", { class: "up-title" }, o.e.title,
         isMultiDay(o.e) ? h("small", {}, `〜${dateLabel(lastDay(o.e))}`) : null,
         isSeries(o.e) ? repeatMark() : null),
@@ -410,7 +427,7 @@ function viewWeek() {
       MEMBERS.map((m) => h("td", { class: isOff(m.id, ds) ? "is-off" : null },
         isOff(m.id, ds) ? h("span", { class: "off-badge" }, "休") : null,
         dayList(ds, m.id).map((o) =>
-          h("div", { class: `mini m-${o.e.member}${o.allDay ? " all-day" : ""}${o.pending ? " has-pending" : ""}` },
+          h("div", { class: `mini m-${m.id}${o.allDay ? " all-day" : ""}${o.pending ? " has-pending" : ""}` },
             h("b", {}, o.text), " ", o.e.title, isSeries(o.e) ? repeatMark() : null,
             o.pending ? h("span", { class: "flag" }, "送迎 誰が行く？") : null)))));
   });
@@ -443,7 +460,7 @@ function viewMonth() {
   for (let n = 1; n <= r.days; n++) {
     const ds = `${r.year}-${pad(r.month)}-${pad(n)}`;
     const list = dayList(ds);
-    const who = MEMBERS.filter((m) => list.some((o) => o.e.member === m.id));
+    const who = MEMBERS.filter((m) => list.some((o) => o.e.members.includes(m.id)));
     const pending = list.some((o) => o.pending);
     const dow = (r.lead + n - 1) % 7;
     const names = who.map((m) => memberName(m.id)).join("・");
@@ -497,7 +514,7 @@ function viewFamily() {
       const nowOcc = nowList.find((o) => !o.allDay) || nowList[0];
       // つぎ：これから始まる予定のうち、いちばん早いもの
       const nextEv = events
-        .filter((e) => e.member === m.id && (e.date > today || (e.date === today && !isAllDay(e) && toMinutes(e.start) > nm)))
+        .filter((e) => e.members.includes(m.id) && (e.date > today || (e.date === today && !isAllDay(e) && toMinutes(e.start) > nm)))
         .sort((a, b) => (a.date === b.date
           ? (isAllDay(b) - isAllDay(a)) || ((a.start ? toMinutes(a.start) : 0) - (b.start ? toMinutes(b.start) : 0))
           : a.date < b.date ? -1 : 1))[0];
@@ -685,6 +702,11 @@ function mergeWatched(draw = true) {
 
 function normEvent(e) {
   e.member = normId(e.member);
+  // 人のリスト：無ければ member の1人。並びは父・母・長男・長女の順
+  const list = Array.isArray(e.members) && e.members.length ? e.members.map(normId) : [e.member];
+  e.members = ALL_IDS.filter((id) => list.includes(id));
+  if (!e.members.length) e.members = [e.member];
+  e.member = e.members[0];
   for (const k of legs(e)) e.ride[k].driver = e.ride[k].driver ? normId(e.ride[k].driver) : null;
   return e;
 }
@@ -720,7 +742,7 @@ function openRide(e, key) {
   rideTarget = { e, key };
   $("rideTitle").textContent = `${LEG_NAME[key]}は誰が行く？`;
   const day = key === "go" ? e.date : lastDay(e);
-  $("rideInfo").textContent = `${memberName(e.member)}の「${e.title}」 ${dateLabel(day)} ${showTime(e.ride[key].time)}`;
+  $("rideInfo").textContent = `${whoText(e)}の「${e.title}」 ${dateLabel(day)} ${showTime(e.ride[key].time)}`;
   rideDialog.showModal();
 }
 rideDialog.querySelectorAll(".driver").forEach((b) => b.addEventListener("click", () => {
@@ -732,22 +754,28 @@ $("cancelRide").addEventListener("click", () => rideDialog.close());
 
 // ---------- メンバーを選ぶボタン（追加画面・参加画面で共用） ----------
 // useDefault：参加前は家族の名前を読めないので、最初の呼び名（父・母・長男・長女）で出す
-function memberPicker(container, onPick, useDefault = false) {
-  let picked = null;
-  const set = (id) => {
-    picked = id;
-    container.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", String(c.dataset.member === id)));
-    if (onPick) onPick(id);
+// multi：複数人を選べる（予定の「誰の」）。「全員」ボタン付き。get() は人のリストを返す
+function memberPicker(container, onPick, useDefault = false, multi = false) {
+  let picked = multi ? [] : null;
+  const isOn = (id) => (multi ? picked.includes(id) : picked === id);
+  const set = (v) => {
+    picked = multi ? ALL_IDS.filter((id) => (v || []).includes(id)) : v;
+    draw();
+    if (onPick) onPick(picked);
   };
+  const toggle = (id) => set(multi ? (isOn(id) ? picked.filter((x) => x !== id) : [...picked, id]) : id);
   const draw = () => container.replaceChildren(...MEMBERS.map((m) => {
     const p = useDefault ? m : profile(m.id);
     const b = h("button", {
-      type: "button", class: `chip m-${m.id}`, "aria-pressed": String(picked === m.id), "data-member": m.id,
-      onclick: () => set(m.id),
+      type: "button", class: `chip m-${m.id}`, "aria-pressed": String(isOn(m.id)), "data-member": m.id,
+      onclick: () => toggle(m.id),
     });
     b.append(iconSvg(p.icon, 18), h("span", {}, p.name));
     return b;
-  }));
+  }), multi ? h("button", {
+    type: "button", class: "chip chip-all", "aria-pressed": String(picked.length === ALL_IDS.length),
+    onclick: () => set(picked.length === ALL_IDS.length ? [] : ALL_IDS),
+  }, "全員") : null);
   draw();
   if (!useDefault) container._refresh = draw;
   return { get: () => picked, set };
@@ -756,7 +784,7 @@ function memberPicker(container, onPick, useDefault = false) {
 // ---------- 予定・家のことの追加・編集・削除 ----------
 const addDialog = $("addDialog");
 const form = $("addForm");
-const addPicker = memberPicker($("memberPicker"));
+const addPicker = memberPicker($("memberPicker"), null, false, true);
 const rideToggle = $("rideToggle");
 const rideFields = $("rideFields");
 const errEl = $("formError");
@@ -904,7 +932,7 @@ function openEditor(e = null, day = null, kind = "event") {
   repeatWeeks = isSeries(src) ? [...(src.repeat.weeks || [])] : [];
   houseTypeSel = e && e.kind === "house" ? e.type : "burnable";
   if (!e) {
-    addPicker.set(me);
+    addPicker.set([me]);
     form.date.value = ymd(new Date());
   } else {
     form.date.value = e.series && day ? day : (src.date || e.date);
@@ -912,7 +940,7 @@ function openEditor(e = null, day = null, kind = "event") {
     if (e.kind === "house") {
       form.houseName.value = e.type === "other" ? e.name || "" : "";
     } else {
-      addPicker.set(e.member);
+      addPicker.set(e.members);
       form.title.value = e.title;
       form.endDate.value = !e.series && e.endDate ? e.endDate : "";
       allDayToggle.checked = isAllDay(e);
@@ -975,9 +1003,10 @@ function readForm() {
     if (houseTypeSel === "other" && !name) return void (errEl.textContent = "名前を入れてください");
     return { type: houseTypeSel, name: houseTypeSel === "other" ? name : null, date, ...rep };
   }
-  const member = addPicker.get();
+  const members = addPicker.get();
+  const member = members[0];
   const title = form.title.value.trim();
-  if (!member) return void (errEl.textContent = "誰の予定かを選んでください");
+  if (!members.length) return void (errEl.textContent = "誰の予定かを選んでください（1人以上）");
   if (!title) return void (errEl.textContent = "「何」と「いつ」を入れてください");
   const allDay = allDayToggle.checked;
   if (!allDay && !form.start.value) return void (errEl.textContent = "開始時間を入れてください（時間が無ければ「終日」をオン）");
@@ -995,7 +1024,7 @@ function readForm() {
     if (backOn) ride.back = leg(form.backTime.value);
   }
   return {
-    member, title, date, endDate, allDay,
+    member, members, title, date, endDate, allDay,
     start: allDay ? null : form.start.value,
     end: allDay ? null : (form.end.value || null),
     ride, ...rep,
@@ -1013,7 +1042,7 @@ const newDoc = (v) => ({ ...v, createdBy: uid(), createdAt: serverTimestamp(), u
 // その日だけの変更で上書きする中身
 const overrideFields = (v, e) => (e.kind === "house"
   ? { type: v.type, name: v.name }
-  : { member: v.member, title: v.title, allDay: v.allDay, start: v.start, end: v.end, ride: keepDrivers(v.ride, e.ride) });
+  : { member: v.member, members: v.members, title: v.title, allDay: v.allDay, start: v.start, end: v.end, ride: keepDrivers(v.ride, e.ride) });
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();

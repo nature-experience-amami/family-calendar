@@ -507,3 +507,12 @@ legend, .field > span { font-size: 14px; color: var(--muted); margin-bottom: 6px
 .house-list li:first-child .house-row { border-top: 0; }
 .house-row-name { font-weight: 700; }
 .house-row-when { font-size: 12px; color: var(--muted); text-align: right; }
+
+/* 複数人の予定 */
+.m-multi { --c: #6b7280; }
+.who-icons { display: inline-flex; align-items: center; }
+.who-icons .avatar { box-shadow: 0 0 0 2px var(--card); }
+.who-icons .avatar + .avatar { margin-left: -6px; }
+.label.all-small { font-size: 11px; padding: 1px 8px; }
+.chip-all { grid-column: 1 / -1; --c: var(--text); }
+.up-item { grid-template-columns: 76px auto 1fr; }

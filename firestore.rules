@@ -120,10 +120,19 @@ service cloud.firestore {
           && d.get('endDate', null) == null);
     }
 
+    // 予定の人（複数人）：無くてもよい（以前の版は member の1人だけ）。member はこの中の1人
+    function validMembers(list, member) {
+      return list is list
+        && list.size() >= 1 && list.size() <= 4
+        && list.hasOnly(['father', 'mother', 'son', 'daughter'])
+        && (member == null || member in list);
+    }
+
     function validEvent(d) {
-      return d.keys().hasOnly(['member', 'title', 'date', 'endDate', 'allDay', 'start', 'end', 'ride', 'repeat', 'repeatUntil', 'createdBy', 'createdAt', 'updatedAt'])
+      return d.keys().hasOnly(['member', 'members', 'title', 'date', 'endDate', 'allDay', 'start', 'end', 'ride', 'repeat', 'repeatUntil', 'createdBy', 'createdAt', 'updatedAt'])
         && d.keys().hasAll(['member', 'title', 'date', 'start', 'end', 'ride', 'createdBy', 'createdAt', 'updatedAt'])
         && validEventMember(d.member)
+        && (!('members' in d) || validMembers(d.members, d.member))
         && d.title is string && d.title.size() > 0 && d.title.size() <= 40
         && isDate(d.date)
         && validWhen(d)
@@ -150,13 +159,14 @@ service cloud.firestore {
 
     // くり返しの予定の、その日だけの変更（内容・送迎の担当・削除）。ID は「元の予定のID_日付」
     function validOverride(d, id) {
-      return d.keys().hasOnly(['seriesId', 'date', 'cancelled', 'member', 'title', 'allDay', 'start', 'end', 'ride', 'type', 'name', 'updatedBy', 'updatedAt'])
+      return d.keys().hasOnly(['seriesId', 'date', 'cancelled', 'member', 'members', 'title', 'allDay', 'start', 'end', 'ride', 'type', 'name', 'updatedBy', 'updatedAt'])
         && d.keys().hasAll(['seriesId', 'date', 'updatedBy', 'updatedAt'])
         && d.seriesId is string
         && isDate(d.date)
         && id == d.seriesId + '_' + d.date
         && d.get('cancelled', false) is bool
         && (!('member' in d) || validEventMember(d.member))
+        && (!('members' in d) || validMembers(d.members, d.get('member', null)))
         && (!('title' in d) || (d.title is string && d.title.size() > 0 && d.title.size() <= 40))
         && (!('allDay' in d) || d.allDay is bool)
         && (!('start' in d) || d.start == null || isTime(d.start))

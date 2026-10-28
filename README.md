@@ -20,6 +20,7 @@
   - 月：日付のマスに予定がある人の色の点、送迎が未定の日は「!」。日付を押すとその日の予定を下に表示。「前の月」「次の月」「今月に戻る」
   - 家族：4人のカードに「いま」と「つぎ」の予定（「つぎ」は60日先まで）
 - 予定の追加：「誰の・何・いつ」だけで保存
+  - 「誰の」は複数選べる（1人以上）。「全員」ボタンあり。今日・これからの予定はアイコンを並べて表示（全員なら「全員」）、週は選んだ人それぞれの列、月の点・家族の「いま」「つぎ」も全員分。送迎の担当は予定ごとに1人
   - 「終日」をオンにすると時間なし。オフなら開始時間（必須）と終了時間（任意）。1日だけの予定で終了が開始より前なら保存できない
   - 「終わりの日」（任意）で何日か続く予定（旅行・合宿など）。期間中の毎日に表示。終わりの日は始まりの日から62日先まで
   - 「送迎が必要」をオンにすると行き（送り）/帰り（お迎え）と時間を入力。送りの初期値は開始時間、お迎えの初期値は終了時間
@@ -45,7 +46,7 @@
 
 家族の色：父＝青、母＝橙、長男＝緑、長女＝紫
 
-予定や送迎の担当は固定ID（`father` / `mother` / `son` / `daughter`）でひもづけているので、名前を変えても予定はずれません。以前の版で保存された `papa` / `mama` の予定も読めて、送迎の担当を決めたときに新しいIDへ直ります。
+予定や送迎の担当は固定ID（`father` / `mother` / `son` / `daughter`）でひもづけているので、名前を変えても予定はずれません。複数人の予定は `members`（人のリスト）に入れ、`member` にはその最初の人を入れます。以前の1人だけの予定（`members` なし）は `member` の1人として表示します（データの移し替えはしません）。以前の版で保存された `papa` / `mama` の予定も読めて、送迎の担当を決めたときに新しいIDへ直ります。
 
 ## ファイル
 
@@ -66,7 +67,7 @@
 ```
 families/home/private/invite      招待コード { code }（アプリからは読めない）
 families/home/members/{端末のID}   参加した端末 { member, inviteCode, joinedAt }
-families/home/events/{予定のID}    予定 { member, title, date, endDate, allDay, start, end, ride, repeat, repeatUntil, createdBy, createdAt, updatedAt }
+families/home/events/{予定のID}    予定 { member, members, title, date, endDate, allDay, start, end, ride, repeat, repeatUntil, createdBy, createdAt, updatedAt }
 families/home/profiles/{father など} 名前とアイコン・休みの決まり { name, icon, offDays, holidayOff, updatedBy, updatedAt }
 families/home/house/{ID}           家のこと { type, name, date, repeat, repeatUntil, createdBy, createdAt, updatedAt }
 families/home/overrides/{元のID_日付} くり返しの予定・家のことの、その日だけの変更・送迎の担当・削除
