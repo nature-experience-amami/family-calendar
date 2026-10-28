@@ -9,6 +9,7 @@ rules_version = '2';
 //     { member, title, date, endDate, allDay, start, end, ride, createdBy, createdAt, updatedAt }
 //   families/{familyId}/profiles/{memberId} 名前とアイコン・休みの決まり { name, icon, offDays, holidayOff, updatedBy, updatedAt }
 //   families/{familyId}/overrides/{元の予定のID_日付} くり返しの予定のその日だけの変更 { seriesId, date, cancelled, member, title, allDay, start, end, ride, updatedBy, updatedAt }
+//   families/{familyId}/house/{ID}       家のこと（ごみ出しなど）{ type, name, date, repeat, repeatUntil, createdBy, createdAt, updatedAt }
 //   families/{familyId}/dayoffs/{日付_人}  その日だけの休みの変更 { member, date, off, updatedBy, updatedAt }
 //
 // 家族は固定ID（father / mother / son / daughter）で表す。
@@ -105,11 +106,15 @@ service cloud.firestore {
       let ru = d.get('repeatUntil', null);
       return (r == null && ru == null)
         || (r is map
-          && r.keys().hasOnly(['freq', 'days', 'until'])
+          && r.keys().hasOnly(['freq', 'days', 'weeks', 'until'])
           && r.keys().hasAll(['freq', 'days', 'until'])
-          && r.freq in ['daily', 'weekly', 'monthly']
+          && r.freq in ['daily', 'weekly', 'monthly', 'monthlyNth']
           && r.days is list && r.days.size() <= 7 && r.days.hasOnly([0, 1, 2, 3, 4, 5, 6])
           && (r.freq != 'weekly' || r.days.size() > 0)
+          // 毎月の第何・何曜日：weeks＝第何週（1〜5）
+          && (r.freq != 'monthlyNth'
+            || (r.days.size() > 0 && r.get('weeks', null) is list
+              && r.weeks.size() > 0 && r.weeks.size() <= 5 && r.weeks.hasOnly([1, 2, 3, 4, 5])))
           && (r.until == null || (isDate(r.until) && r.until >= d.date))
           && ru == (r.until == null ? '9999-12-31' : r.until)
           && d.get('endDate', null) == null);
@@ -127,9 +132,25 @@ service cloud.firestore {
         && d.updatedAt == request.time;
     }
 
+    // 家のこと（ごみ出しなど）：種類と、その他のときの名前
+    function validHouseType(type, name) {
+      return type in ['burnable', 'nonburnable', 'recycle', 'other']
+        && (name == null || (name is string && name.size() >= 1 && name.size() <= 20))
+        && (type != 'other' || name != null);
+    }
+
+    function validHouse(d) {
+      return d.keys().hasOnly(['type', 'name', 'date', 'repeat', 'repeatUntil', 'createdBy', 'createdAt', 'updatedAt'])
+        && d.keys().hasAll(['type', 'name', 'date', 'repeat', 'repeatUntil', 'createdBy', 'createdAt', 'updatedAt'])
+        && validHouseType(d.type, d.name)
+        && isDate(d.date)
+        && validRepeat(d)
+        && d.updatedAt == request.time;
+    }
+
     // くり返しの予定の、その日だけの変更（内容・送迎の担当・削除）。ID は「元の予定のID_日付」
     function validOverride(d, id) {
-      return d.keys().hasOnly(['seriesId', 'date', 'cancelled', 'member', 'title', 'allDay', 'start', 'end', 'ride', 'updatedBy', 'updatedAt'])
+      return d.keys().hasOnly(['seriesId', 'date', 'cancelled', 'member', 'title', 'allDay', 'start', 'end', 'ride', 'type', 'name', 'updatedBy', 'updatedAt'])
         && d.keys().hasAll(['seriesId', 'date', 'updatedBy', 'updatedAt'])
         && d.seriesId is string
         && isDate(d.date)
@@ -141,6 +162,7 @@ service cloud.firestore {
         && (!('start' in d) || d.start == null || isTime(d.start))
         && (!('end' in d) || d.end == null || isTime(d.end))
         && (!('ride' in d) || validRide(d.ride))
+        && (!('type' in d) || validHouseType(d.type, d.get('name', null)))
         && d.updatedBy == request.auth.uid
         && d.updatedAt == request.time;
     }
@@ -185,12 +207,27 @@ service cloud.firestore {
       allow delete: if isMember(familyId);
     }
 
+    // 家のこと：家族みんなの用事。参加している家族なら誰でも追加・編集・削除できる
+    match /families/{familyId}/house/{houseId} {
+      allow read: if isMember(familyId);
+      allow create: if isMember(familyId)
+        && validHouse(request.resource.data)
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time;
+      allow update: if isMember(familyId)
+        && validHouse(request.resource.data)
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isMember(familyId);
+    }
+
     match /families/{familyId}/overrides/{overrideId} {
       allow read: if isMember(familyId);
       // 元の予定があるときだけ（同時に作る・終わらせるときのために existsAfter で確かめる）
       allow create, update: if isMember(familyId)
         && validOverride(request.resource.data, overrideId)
-        && existsAfter(/databases/$(database)/documents/families/$(familyId)/events/$(request.resource.data.seriesId));
+        && (existsAfter(/databases/$(database)/documents/families/$(familyId)/events/$(request.resource.data.seriesId))
+          || existsAfter(/databases/$(database)/documents/families/$(familyId)/house/$(request.resource.data.seriesId)));
       allow delete: if isMember(familyId);
     }
 

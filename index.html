@@ -62,6 +62,22 @@
     <form id="addForm" method="dialog" novalidate>
       <h2 id="editorTitle">予定を追加</h2>
 
+      <div id="kindSeg" class="seg seg2" role="radiogroup" aria-label="種類">
+        <button type="button" role="radio" data-kind="event">予定</button>
+        <button type="button" role="radio" data-kind="house">家のこと</button>
+      </div>
+
+      <div id="houseBox" hidden>
+        <fieldset>
+          <legend>家のこと（家族みんなの用事）</legend>
+          <div id="houseTypes" class="house-types" role="radiogroup" aria-label="家のことの種類"></div>
+        </fieldset>
+        <label class="field" id="houseNameBox" hidden>
+          <span>名前（例：回覧板・町内清掃）</span>
+          <input name="houseName" type="text" maxlength="20" autocomplete="off">
+        </label>
+      </div>
+
       <fieldset>
         <legend>誰の</legend>
         <div id="memberPicker" class="chips"></div>
@@ -91,6 +107,11 @@
           <button type="button" role="radio" data-freq="weekly">毎週</button>
           <button type="button" role="radio" data-freq="monthly">毎月</button>
         </div>
+        <div id="monthlySeg" class="seg seg2" role="radiogroup" aria-label="毎月のくり返し方" hidden>
+          <button type="button" role="radio" data-freq="monthly" id="monthlyDayBtn">同じ日</button>
+          <button type="button" role="radio" data-freq="monthlyNth">第◯・◯曜日</button>
+        </div>
+        <div id="repeatWeeks" class="weeks-grid" role="group" aria-label="第何週" hidden></div>
         <div id="repeatDays" class="offday-grid repeat-days" role="group" aria-label="くり返す曜日" hidden></div>
         <p id="repeatMonthly" class="hint" hidden></p>
         <label class="field" id="repeatUntilBox" hidden>
@@ -171,7 +192,21 @@
       <h2 id="menuTitle">メニュー</h2>
       <div class="actions column">
         <button type="button" id="openProfiles" class="btn">名前・アイコン・休み</button>
+        <button type="button" id="openHouse" class="btn">家のこと（ごみ出しなど）</button>
         <button type="button" id="openSwitchMe" class="btn">自分を変える</button>
+        <button type="submit" class="btn ghost">閉じる</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 家のことの一覧 -->
+  <dialog id="houseDialog" class="sheet">
+    <form method="dialog">
+      <h2>家のこと（ごみ出しなど）</h2>
+      <p class="hint">押すと編集できます。日によって変わるとき（年末年始など）は、月の表示で日付を押して変えられます。</p>
+      <ul id="houseList" class="house-list"></ul>
+      <div class="actions column">
+        <button type="button" id="addHouse" class="btn primary">＋ 家のことを追加</button>
         <button type="submit" class="btn ghost">閉じる</button>
       </div>
     </form>

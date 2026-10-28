@@ -9,7 +9,7 @@ import {
   writeBatch, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 import { firebaseConfig, FAMILY_ID } from "./firebase-config.js";
-import { ICONS, iconSvg, isIcon, repeatSvg } from "./icons.js";
+import { ICONS, iconSvg, isIcon, repeatSvg, HOUSE_TYPES, houseType, houseSvg } from "./icons.js";
 import { holidayName } from "./holidays.js";
 
 // 予定や送迎の担当は固定ID（father / mother / son / daughter）でひもづける。
@@ -74,6 +74,7 @@ const eventsCol = collection(db, "families", FAMILY_ID, "events");
 const profilesCol = collection(db, "families", FAMILY_ID, "profiles");
 const dayoffsCol = collection(db, "families", FAMILY_ID, "dayoffs");
 const overridesCol = collection(db, "families", FAMILY_ID, "overrides");
+const houseCol = collection(db, "families", FAMILY_ID, "house");
 
 // ---------- 日付のヘルパー ----------
 const pad = (n) => String(n).padStart(2, "0");
@@ -185,7 +186,7 @@ function saveError(err) {
 // その日だけの変更（内容・送迎の担当・削除）は overrides/{元の予定のID}_{日付} に保存する。
 const FOREVER = "9999-12-31";
 const REPEAT_AHEAD = 92; // 「これからの予定」に、くり返しの予定を何日先まで出すか
-const FREQ_NAME = { daily: "毎日", weekly: "毎週", monthly: "毎月" };
+const FREQ_NAME = { daily: "毎日", weekly: "毎週", monthly: "毎月", monthlyNth: "毎月" };
 const isSeries = (e) => !!(e && e.repeat && FREQ_NAME[e.repeat.freq]);
 const copyRide = (r) => (r ? JSON.parse(JSON.stringify(r)) : null);
 let overrides = {}; // "元の予定のID_日付" → その日だけの変更
@@ -195,20 +196,48 @@ function repeatsOn(s, day) {
   const d = new Date(day + "T00:00");
   if (s.repeat.freq === "daily") return true;
   if (s.repeat.freq === "weekly") return (s.repeat.days || []).includes(d.getDay());
+  // 毎月の第何・何曜日（例：第1・第3土曜日）
+  if (s.repeat.freq === "monthlyNth") {
+    return (s.repeat.days || []).includes(d.getDay()) && (s.repeat.weeks || []).includes(Math.ceil(d.getDate() / 7));
+  }
   return d.getDate() === Number(s.date.slice(8, 10)); // 毎月：同じ日付（その日が無い月は飛ばす）
 }
 
 // くり返しの予定の、ある日の分（その日だけの変更を重ねる）。削除された日は null
+const OVERRIDE_FIELDS = ["member", "title", "allDay", "start", "end", "ride", "type", "name"];
 function instanceOf(s, day) {
   const ov = overrides[`${s.id}_${day}`];
   if (ov && ov.cancelled) return null;
-  const pick = (k) => (ov && k in ov ? ov[k] : s[k]);
-  return normEvent({
-    id: s.id, series: s, day, date: day, endDate: null, repeat: s.repeat,
-    member: pick("member"), title: pick("title"), allDay: pick("allDay") === true,
-    start: pick("start") || null, end: pick("end") || null, ride: copyRide(pick("ride")),
-  });
+  const inst = { ...s, series: s, day, date: day, endDate: null };
+  if (ov) for (const k of OVERRIDE_FIELDS) if (k in ov) inst[k] = ov[k];
+  if (s.kind === "house") return inst;
+  inst.allDay = inst.allDay === true;
+  inst.start = inst.start || null;
+  inst.end = inst.end || null;
+  inst.ride = copyRide(inst.ride);
+  return normEvent(inst);
 }
+
+// 毎週・毎月などの説明（家のことの一覧で使う）
+function repeatText(s) {
+  if (!isSeries(s)) return `${dateLabel(s.date)} だけ`;
+  const r = s.repeat;
+  const days = (r.days || []).map((i) => WEEKDAYS[i]).join("・");
+  let t = "毎日";
+  if (r.freq === "weekly") t = `毎週 ${days}`;
+  if (r.freq === "monthly") t = `毎月${Number(s.date.slice(8, 10))}日`;
+  if (r.freq === "monthlyNth") t = `毎月 ${(r.weeks || []).map((w) => `第${w}`).join("・")} ${days}曜日`;
+  return r.until ? `${t}（${dateLabel(r.until)}まで）` : t;
+}
+
+// ---------- 家のこと（ごみ出しなど） ----------
+// 誰の予定でもない家族共通の用事。house に保存し、くり返しは予定と同じ仕組みで広げる
+let houseItems = []; // 表示している期間の、日ごとの家のこと
+const houseName = (x) => (x.type === "other" ? x.name || "その他" : houseType(x.type).name);
+const houseOn = (day) => houseItems.filter((x) => x.date === day);
+const houseIcon = (x, size = 14) => h("span", {
+  class: "house-icon", style: `--hc:${houseType(x.type).color}`, title: houseName(x), "aria-label": houseName(x),
+}, houseSvg(x.type, size));
 
 function expandSeries(list, from, to) {
   const out = [];
@@ -339,7 +368,14 @@ function viewToday() {
         isSeries(o.e) ? repeatMark() : null),
       o.pending ? h("span", { class: "flag" }, "送迎 誰が行く？") : null)));
   }
+  const tomorrow = shiftDay(today, 1);
+  const houseToday = houseOn(today), houseTomorrow = houseOn(tomorrow);
   return [
+    houseToday.length || houseTomorrow.length ? h("div", { class: "house-bar" },
+      houseToday.length ? h("p", { class: "house-today" }, houseToday.map((x) => houseIcon(x, 18)),
+        `今日は${houseToday.map(houseName).join("・")}の日`) : null,
+      houseTomorrow.length ? h("p", { class: "house-tomorrow" }, `明日：`, houseTomorrow.map((x) => houseIcon(x, 13)),
+        houseTomorrow.map(houseName).join("・")) : null) : null,
     dayHeading(today, "の予定"),
     offLine(today),
     dayCards(dayList(today), "今日の予定はありません"),
@@ -369,7 +405,8 @@ function viewWeek() {
     return h("tr", { class: ds === today ? "is-today" : null },
       h("th", { class: `day ${dow === 0 || hol ? "sun" : dow === 6 ? "sat" : ""}`, scope: "row" },
         WEEKDAYS[dow], h("small", {}, `${d.getMonth() + 1}/${d.getDate()}`),
-        hol ? h("small", { class: "hol-name" }, hol) : null),
+        hol ? h("small", { class: "hol-name" }, hol) : null,
+        houseOn(ds).length ? h("span", { class: "house-icons" }, houseOn(ds).map((x) => houseIcon(x, 12))) : null),
       MEMBERS.map((m) => h("td", { class: isOff(m.id, ds) ? "is-off" : null },
         isOff(m.id, ds) ? h("span", { class: "off-badge" }, "休") : null,
         dayList(ds, m.id).map((o) =>
@@ -418,7 +455,8 @@ function viewMonth() {
       "aria-label": `${r.month}月${n}日${hol ? "（" + hol + "）" : ""}${names ? "、" + names + "の予定" : "、予定なし"}${pending ? "、送迎が未定" : ""}`,
       onclick: () => { selectedDay = ds; render(); },
     },
-      h("span", { class: "mnum" }, n),
+      h("span", { class: "mtop" }, h("span", { class: "mnum" }, n),
+        houseOn(ds).length ? h("span", { class: "house-icons" }, houseOn(ds).map((x) => houseIcon(x, 11))) : null),
       hol ? h("span", { class: "mhol" }, hol) : null,
       pending ? h("span", { class: "mpending", title: "送迎が未定" }, "!") : null,
       h("span", { class: "dots" }, who.map((m) => h("span", { class: `dot m-${m.id}` })))));
@@ -432,6 +470,10 @@ function viewMonth() {
     h("p", { class: "legend" }, h("span", { class: "mpending" }, "!"), " は送迎が未定の予定がある日"),
     dayHeading(selectedDay, "の予定", "section-title"),
     dayCards(dayList(selectedDay), "この日の予定はありません"),
+    houseOn(selectedDay).length ? h("h3", { class: "sub-title" }, "家のこと") : null,
+    houseOn(selectedDay).length ? h("ul", { class: "house-day" }, houseOn(selectedDay).map((x) => h("li", {},
+      houseIcon(x, 18), h("span", { class: "house-day-name" }, houseName(x)), isSeries(x) ? repeatMark() : null,
+      h("button", { type: "button", class: "edit-btn", onclick: () => openEditor(x, selectedDay), "aria-label": `${houseName(x)}を編集` }, "編集")))) : null,
     h("h3", { class: "sub-title" }, "お休み"),
     offEditor(selectedDay),
   ];
@@ -525,25 +567,40 @@ const repeatQueries = (from, to) => ({
   },
 });
 
+// 家のこと：期間中に始まるもの（1回だけのもの）と、期間の始まりより後まで続くくり返し
+const houseQueries = (from, to) => ({
+  houseStarts: { kind: "house", key: `hs|${from}|${to}`, q: () => query(houseCol, where("date", ">=", from), where("date", "<=", to)) },
+  houseSeries: { kind: "house", key: `hr|${from}`, q: () => query(houseCol, where("repeatUntil", ">=", from)) },
+});
+
 let viewRange = { from: "", to: "" }; // 予定を日ごとに広げる期間
+let houseRange = { from: "", to: "" }; // 家のことを日ごとに広げる期間
 function wantedForView() {
   const today = ymd(new Date());
   if (current === "week") {
     const from = weekStart(), to = shiftDay(weekStart(), 6);
     viewRange = { from, to };
-    return { ...rangeQueries(from, to), ...dayoffQuery(from, to), ...repeatQueries(from, to) };
+    houseRange = viewRange;
+    return { ...rangeQueries(from, to), ...dayoffQuery(from, to), ...repeatQueries(from, to), ...houseQueries(from, to) };
   }
   if (current === "month") {
     const r = monthRange();
     viewRange = { from: r.first, to: r.last };
-    return { ...rangeQueries(r.first, r.last), ...dayoffQuery(r.first, r.last), ...repeatQueries(r.first, r.last) };
+    houseRange = viewRange;
+    return {
+      ...rangeQueries(r.first, r.last), ...dayoffQuery(r.first, r.last), ...repeatQueries(r.first, r.last),
+      ...houseQueries(r.first, r.last),
+    };
   }
   if (current === "family") {
     viewRange = { from: today, to: shiftDay(today, FAMILY_DAYS) };
+    houseRange = { from: "", to: "" }; // 家族の画面には出さない
     return { ...rangeQueries(today, viewRange.to), ...dayoffQuery(today, today), ...repeatQueries(today, viewRange.to) };
   }
   viewRange = { from: today, to: today };
+  houseRange = { from: today, to: shiftDay(today, 1) }; // 今日と明日
   return {
+    ...houseQueries(today, shiftDay(today, 1)),
     ...rangeQueries(today, today),
     ...dayoffQuery(today, today),
     ...repeatQueries(today, shiftDay(today, REPEAT_AHEAD)),
@@ -570,11 +627,12 @@ function watchForView() {
     // 表示する期間が変わったときは、そろうまで「読み込み中」（「もっと見る」のときは今の表示を残す）
     if (name !== "upcoming") loaded = false;
     const entry = { key: w.key, kind: w.kind || "events", docs: null };
+    const toItem = entry.kind === "house" ? (d) => ({ id: d.id, kind: "house", ...d.data() }) : null;
     entry.stop = onSnapshot(w.q(), (snap) => {
       if (watching[name] !== entry) return; // もう使っていない問い合わせ
       entry.docs = entry.kind === "events"
         ? snap.docs.map((d) => normEvent({ id: d.id, ...d.data() }))
-        : snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        : snap.docs.map(toItem || ((d) => ({ id: d.id, ...d.data() })));
       mergeWatched();
     }, (err) => {
       console.error(err);
@@ -596,6 +654,14 @@ function mergeWatched(draw = true) {
   for (const w of all) if (w.kind === "dayoffs") for (const d of w.docs) if (typeof d.off === "boolean") dayoffs[d.id] = d;
   overrides = {};
   for (const w of all) if (w.kind === "overrides") for (const d of w.docs) overrides[d.id] = d;
+  // 家のこと：1回だけのものはそのまま、くり返しは期間の日ごとに広げる
+  const houseById = new Map();
+  for (const w of all) if (w.kind === "house") for (const x of w.docs) houseById.set(x.id, x);
+  const houseDocs = [...houseById.values()];
+  houseItems = houseRange.from ? [
+    ...houseDocs.filter((x) => !isSeries(x) && x.date >= houseRange.from && x.date <= houseRange.to),
+    ...expandSeries(houseDocs.filter(isSeries), houseRange.from, houseRange.to),
+  ] : [];
   // 普通の予定はそのまま、くり返しの予定は表示している期間の日ごとに広げる
   const docs = [...byId.values()];
   const seriesList = docs.filter(isSeries);
@@ -687,7 +753,7 @@ function memberPicker(container, onPick, useDefault = false) {
   return { get: () => picked, set };
 }
 
-// ---------- 予定の追加・編集・削除 ----------
+// ---------- 予定・家のことの追加・編集・削除 ----------
 const addDialog = $("addDialog");
 const form = $("addForm");
 const addPicker = memberPicker($("memberPicker"));
@@ -698,10 +764,14 @@ const allDayToggle = $("allDayToggle");
 const timeFields = $("timeFields");
 const leg = (time) => ({ time, driver: null });
 
-let editTarget = null; // 編集中の予定（新しく追加するときは null）
-let editDay = null;    // 編集中の日（くり返しの予定のときは、押した日）
-let repeatFreq = "none";
+let editTarget = null;   // 編集中の予定・家のこと（新しく追加するときは null）
+let editDay = null;      // 押した日（一覧から開いたときは null＝全体を編集）
+let editKind = "event";  // "event"＝予定、"house"＝家のこと
+let houseTypeSel = "burnable";
+let repeatFreq = "none"; // none / daily / weekly / monthly / monthlyNth
 let repeatDays = [];
+let repeatWeeks = [];
+const colOf = (x) => (x && x.kind === "house" ? houseCol : eventsCol);
 
 // 送り・お迎えの時間の初期値：送り＝開始時間、お迎え＝終了時間（手で変えたら、それ以降は上書きしない）
 let goTouched = false;
@@ -714,39 +784,83 @@ function syncRideTimes() {
 form.goTime.addEventListener("input", () => { goTouched = true; });
 form.backTime.addEventListener("input", () => { backTouched = true; });
 
+// 予定／家のこと の切り替え：家のことは「誰の・時間・送迎・終わりの日」が無い
+function drawKind() {
+  const house = editKind === "house";
+  $("kindSeg").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.kind === editKind)));
+  $("houseBox").hidden = !house;
+  $("memberPicker").closest("fieldset").hidden = house;
+  form.title.closest("label").hidden = house;
+  allDayToggle.closest("label").hidden = house;
+  timeFields.hidden = house || allDayToggle.checked;
+  rideToggle.closest("label").hidden = house;
+  rideFields.hidden = house || !rideToggle.checked;
+  $("houseNameBox").hidden = !house || houseTypeSel !== "other";
+  $("houseTypes").replaceChildren(...HOUSE_TYPES.map((t) => h("button", {
+    type: "button", class: "house-type", role: "radio", "aria-checked": String(t.id === houseTypeSel), style: `--hc:${t.color}`,
+    onclick: () => { houseTypeSel = t.id; drawKind(); },
+  }, houseSvg(t.id, 22), h("span", {}, t.name))));
+  drawRepeat();
+}
+$("kindSeg").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+  editKind = b.dataset.kind;
+  if (editKind === "house" && repeatFreq === "none") { repeatFreq = "weekly"; defaultRepeat(); }
+  drawKind();
+}));
+
 // くり返しの入力
+const dateObj = () => (form.date.value ? new Date(form.date.value + "T00:00") : new Date());
+function defaultRepeat() {
+  const d = dateObj();
+  if (!repeatDays.length) repeatDays = [d.getDay()];
+  if (!repeatWeeks.length) repeatWeeks = [Math.ceil(d.getDate() / 7)];
+}
+function toggleIn(list, v) { return list.includes(v) ? list.filter((x) => x !== v) : [...list, v].sort((a, b) => a - b); }
 function drawRepeat() {
-  $("repeatSeg").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.freq === repeatFreq)));
+  const monthly = repeatFreq === "monthly" || repeatFreq === "monthlyNth";
+  $("repeatSeg").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked",
+    String(b.dataset.freq === repeatFreq || (b.dataset.freq === "monthly" && monthly))));
   const on = repeatFreq !== "none";
-  $("repeatDays").hidden = repeatFreq !== "weekly";
-  $("repeatUntilBox").hidden = !on;
-  $("endDateBox").hidden = on; // くり返しの予定は1日ずつ（何日か続く予定にはしない）
-  const md = form.date.value ? Number(form.date.value.slice(8, 10)) : null;
-  $("repeatMonthly").hidden = repeatFreq !== "monthly";
-  $("repeatMonthly").textContent = md ? `毎月${md}日（${md}日が無い月は飛ばします）` : "";
+  $("monthlySeg").hidden = !monthly;
+  $("monthlySeg").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.freq === repeatFreq)));
+  const md = dateObj().getDate();
+  $("monthlyDayBtn").textContent = `毎月${md}日`;
+  $("repeatWeeks").hidden = repeatFreq !== "monthlyNth";
+  $("repeatWeeks").replaceChildren(...[1, 2, 3, 4, 5].map((w) => h("button", {
+    type: "button", class: "offday", "aria-pressed": String(repeatWeeks.includes(w)),
+    onclick: () => { repeatWeeks = toggleIn(repeatWeeks, w); drawRepeat(); },
+  }, `第${w}`)));
+  $("repeatDays").hidden = repeatFreq !== "weekly" && repeatFreq !== "monthlyNth";
   $("repeatDays").replaceChildren(...WEEKDAYS.map((w, i) => h("button", {
     type: "button", class: "offday", "aria-pressed": String(repeatDays.includes(i)), "aria-label": `${w}曜日`,
-    onclick: () => {
-      repeatDays = repeatDays.includes(i) ? repeatDays.filter((x) => x !== i) : [...repeatDays, i].sort();
-      drawRepeat();
-    },
+    onclick: () => { repeatDays = toggleIn(repeatDays, i); drawRepeat(); },
   }, w)));
+  $("repeatMonthly").hidden = !monthly;
+  $("repeatMonthly").textContent = repeatFreq === "monthly"
+    ? `毎月${md}日（${md}日が無い月は飛ばします）`
+    : `毎月 ${repeatWeeks.map((w) => `第${w}`).join("・") || "第◯"} ${repeatDays.map((i) => WEEKDAYS[i]).join("・") || "◯"}曜日`;
+  $("repeatUntilBox").hidden = !on;
+  $("endDateBox").hidden = on || editKind === "house"; // くり返しの予定・家のことは1日ずつ
 }
 $("repeatSeg").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
   repeatFreq = b.dataset.freq;
-  if (repeatFreq === "weekly" && !repeatDays.length && form.date.value) repeatDays = [new Date(form.date.value + "T00:00").getDay()];
+  defaultRepeat();
   drawRepeat();
   errEl.textContent = timeProblem();
+}));
+$("monthlySeg").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+  repeatFreq = b.dataset.freq;
+  drawRepeat();
 }));
 
 // 日時の確認（入力のたびと、保存のときに使う）
 function timeProblem() {
   const date = form.date.value;
-  const endDate = repeatFreq === "none" ? form.endDate.value : "";
+  const endDate = repeatFreq === "none" && editKind === "event" ? form.endDate.value : "";
   if (endDate && date && endDate < date) return "終わりの日を確認してください";
   if (endDate && date && daysBetween(date, endDate) > SPAN_MAX) return `終わりの日は${SPAN_MAX}日先までにしてください`;
   if (repeatFreq !== "none" && form.repeatUntil.value && date && form.repeatUntil.value < date) return "くり返しの終わりの日を確認してください";
-  if (allDayToggle.checked) return "";
+  if (editKind === "house" || allDayToggle.checked) return "";
   const start = form.start.value, end = form.end.value;
   const oneDay = !endDate || endDate === date;
   // 1日だけの予定で、終了時間が開始時間より前ならだめ（何日か続く予定は、終わりの日の時間なので比べない）
@@ -755,7 +869,7 @@ function timeProblem() {
 }
 function onTimeInput() {
   syncRideTimes();
-  if (repeatFreq === "monthly") drawRepeat();
+  drawRepeat();
   errEl.textContent = timeProblem();
 }
 for (const name of ["date", "endDate", "start", "end", "repeatUntil"]) {
@@ -771,40 +885,48 @@ rideToggle.addEventListener("change", () => {
   syncRideTimes();
 });
 
-// 追加（e なし）・編集（e＝押した予定、day＝その日）の画面を開く
-function openEditor(e = null, day = null) {
+// 追加（e なし）・編集（e＝押した予定や家のこと、day＝その日。一覧から開いたときは day なし）の画面を開く
+function openEditor(e = null, day = null, kind = "event") {
   form.reset();
   editTarget = e;
   editDay = day;
+  editKind = e ? (e.kind === "house" ? "house" : "event") : kind;
   errEl.textContent = "";
   goTouched = !!e;
   backTouched = !!e;
-  $("editorTitle").textContent = e ? "予定を編集" : "予定を追加";
+  const what = editKind === "house" ? "家のこと" : "予定";
+  $("editorTitle").textContent = e ? `${what}を編集` : `${what}を追加`;
+  $("kindSeg").hidden = !!e;
   $("deleteEvent").hidden = !e;
   const src = e && e.series ? e.series : e;
-  repeatFreq = isSeries(src) ? src.repeat.freq : "none";
-  repeatDays = isSeries(src) && src.repeat.freq === "weekly" ? [...src.repeat.days] : [];
+  repeatFreq = isSeries(src) ? src.repeat.freq : editKind === "house" ? "weekly" : "none";
+  repeatDays = isSeries(src) ? [...(src.repeat.days || [])] : [];
+  repeatWeeks = isSeries(src) ? [...(src.repeat.weeks || [])] : [];
+  houseTypeSel = e && e.kind === "house" ? e.type : "burnable";
   if (!e) {
     addPicker.set(me);
     form.date.value = ymd(new Date());
   } else {
-    addPicker.set(e.member);
-    form.title.value = e.title;
-    form.date.value = e.series ? day : e.date;
-    form.endDate.value = !e.series && e.endDate ? e.endDate : "";
-    allDayToggle.checked = isAllDay(e);
-    form.start.value = e.start || "";
-    form.end.value = e.end || "";
+    form.date.value = e.series && day ? day : (src.date || e.date);
     form.repeatUntil.value = isSeries(src) && src.repeat.until ? src.repeat.until : "";
-    rideToggle.checked = !!e.ride;
-    form.goOn.checked = !!(e.ride && e.ride.go);
-    form.backOn.checked = !!(e.ride && e.ride.back);
-    form.goTime.value = e.ride && e.ride.go ? e.ride.go.time : "";
-    form.backTime.value = e.ride && e.ride.back ? e.ride.back.time : "";
+    if (e.kind === "house") {
+      form.houseName.value = e.type === "other" ? e.name || "" : "";
+    } else {
+      addPicker.set(e.member);
+      form.title.value = e.title;
+      form.endDate.value = !e.series && e.endDate ? e.endDate : "";
+      allDayToggle.checked = isAllDay(e);
+      form.start.value = e.start || "";
+      form.end.value = e.end || "";
+      rideToggle.checked = !!e.ride;
+      form.goOn.checked = !!(e.ride && e.ride.go);
+      form.backOn.checked = !!(e.ride && e.ride.back);
+      form.goTime.value = e.ride && e.ride.go ? e.ride.go.time : "";
+      form.backTime.value = e.ride && e.ride.back ? e.ride.back.time : "";
+    }
   }
-  timeFields.hidden = allDayToggle.checked;
-  rideFields.hidden = !rideToggle.checked;
-  drawRepeat();
+  if (repeatFreq !== "none") defaultRepeat();
+  drawKind();
   addDialog.showModal();
 }
 $("addBtn").addEventListener("click", () => openEditor());
@@ -830,19 +952,36 @@ const scopeOptions = (verb) => [
 ];
 
 // 入力を読み取る（だめなら errEl に書いて null）
+function readRepeat() {
+  if (repeatFreq === "weekly" && !repeatDays.length) return void (errEl.textContent = "くり返す曜日を選んでください");
+  if (repeatFreq === "monthlyNth" && (!repeatWeeks.length || !repeatDays.length)) {
+    return void (errEl.textContent = "第何週と曜日を選んでください");
+  }
+  const until = repeatFreq !== "none" && form.repeatUntil.value ? form.repeatUntil.value : null;
+  if (repeatFreq === "none") return { repeat: null, repeatUntil: null };
+  const repeat = { freq: repeatFreq, days: ["weekly", "monthlyNth"].includes(repeatFreq) ? repeatDays : [], until };
+  if (repeatFreq === "monthlyNth") repeat.weeks = repeatWeeks;
+  return { repeat, repeatUntil: until || FOREVER };
+}
 function readForm() {
+  if (!form.date.value) return void (errEl.textContent = "日付を入れてください");
+  const problem = timeProblem();
+  if (problem) return void (errEl.textContent = problem);
+  const rep = readRepeat();
+  if (!rep) return null;
+  const date = form.date.value;
+  if (editKind === "house") {
+    const name = form.houseName.value.trim();
+    if (houseTypeSel === "other" && !name) return void (errEl.textContent = "名前を入れてください");
+    return { type: houseTypeSel, name: houseTypeSel === "other" ? name : null, date, ...rep };
+  }
   const member = addPicker.get();
   const title = form.title.value.trim();
   if (!member) return void (errEl.textContent = "誰の予定かを選んでください");
-  if (!title || !form.date.value) return void (errEl.textContent = "「何」と「いつ」を入れてください");
+  if (!title) return void (errEl.textContent = "「何」と「いつ」を入れてください");
   const allDay = allDayToggle.checked;
   if (!allDay && !form.start.value) return void (errEl.textContent = "開始時間を入れてください（時間が無ければ「終日」をオン）");
-  if (repeatFreq === "weekly" && !repeatDays.length) return void (errEl.textContent = "くり返す曜日を選んでください");
-  const problem = timeProblem();
-  if (problem) return void (errEl.textContent = problem);
-  const date = form.date.value;
-  const repeating = repeatFreq !== "none";
-  const endDate = !repeating && form.endDate.value && form.endDate.value > date ? form.endDate.value : null;
+  const endDate = !rep.repeat && form.endDate.value && form.endDate.value > date ? form.endDate.value : null;
 
   let ride = null;
   if (rideToggle.checked) {
@@ -855,14 +994,11 @@ function readForm() {
     if (goOn) ride.go = leg(form.goTime.value);
     if (backOn) ride.back = leg(form.backTime.value);
   }
-  const until = repeating && form.repeatUntil.value ? form.repeatUntil.value : null;
   return {
     member, title, date, endDate, allDay,
     start: allDay ? null : form.start.value,
     end: allDay ? null : (form.end.value || null),
-    ride,
-    repeat: repeating ? { freq: repeatFreq, days: repeatFreq === "weekly" ? repeatDays : [], until } : null,
-    repeatUntil: repeating ? until || FOREVER : null,
+    ride, ...rep,
   };
 }
 
@@ -874,26 +1010,36 @@ function keepDrivers(ride, old) {
 }
 const uid = () => auth.currentUser.uid;
 const newDoc = (v) => ({ ...v, createdBy: uid(), createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+// その日だけの変更で上書きする中身
+const overrideFields = (v, e) => (e.kind === "house"
+  ? { type: v.type, name: v.name }
+  : { member: v.member, title: v.title, allDay: v.allDay, start: v.start, end: v.end, ride: keepDrivers(v.ride, e.ride) });
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const v = readForm();
   if (!v) return;
   const e = editTarget;
+  const col = editKind === "house" ? houseCol : eventsCol;
   // 電波が弱くても画面にはすぐ出て、つながったときに保存される（失敗したらお知らせを出す）
   try {
     if (!e) {
-      addDoc(eventsCol, newDoc(v)).catch(saveError);
-    } else if (!e.series) {
-      // 普通の予定の編集
-      if (v.repeat) v.endDate = null;
-      updateDoc(doc(eventsCol, e.id), { ...v, ride: v.repeat ? v.ride : keepDrivers(v.ride, e.ride), updatedAt: serverTimestamp() })
-        .catch(saveError);
+      addDoc(col, newDoc(v)).catch(saveError);
+    } else if (!e.series || !editDay) {
+      // 普通の予定・家のこと、または一覧から開いた（全体を編集）
+      const id = e.series ? e.series.id : e.id;
+      const patch = { ...v, updatedAt: serverTimestamp() };
+      if (editKind === "event") {
+        if (v.repeat) patch.endDate = null;
+        patch.ride = v.repeat ? v.ride : keepDrivers(v.ride, e.ride);
+      }
+      updateDoc(doc(col, id), patch).catch(saveError);
     } else {
-      const scope = await choose("くり返しの予定を変える", `${e.title}（${dateLabel(editDay)}）`, scopeOptions("変える"));
+      const scope = await choose(`くり返しの${editKind === "house" ? "家のこと" : "予定"}を変える`,
+        `${e.kind === "house" ? houseName(e) : e.title}（${dateLabel(editDay)}）`, scopeOptions("変える"));
       if (!scope) return;
-      if (scope === "this") await saveThisDay(e, v);
-      else await saveFuture(e, v);
+      if (scope === "this") await saveThisDay(e, v, col);
+      else await saveFuture(e, v, col);
     }
     addDialog.close();
   } catch (err) {
@@ -901,38 +1047,39 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-// この日だけ変える：日付を変えなければ、その日の変更として保存。日付を変えたら、その日を消して普通の予定を作る
-async function saveThisDay(e, v) {
+// この日だけ変える：日付を変えなければ、その日の変更として保存。日付を変えたら、その日を消して1回だけのものを作る
+async function saveThisDay(e, v, col) {
   const s = e.series;
   const ref = doc(overridesCol, `${s.id}_${editDay}`);
   if (v.date === editDay) {
     setDoc(ref, {
-      seriesId: s.id, date: editDay, cancelled: false,
-      member: v.member, title: v.title, allDay: v.allDay, start: v.start, end: v.end, ride: keepDrivers(v.ride, e.ride),
+      seriesId: s.id, date: editDay, cancelled: false, ...overrideFields(v, e),
       updatedBy: uid(), updatedAt: serverTimestamp(),
     }).catch(saveError);
   } else {
     const batch = writeBatch(db);
     batch.set(ref, { seriesId: s.id, date: editDay, cancelled: true, updatedBy: uid(), updatedAt: serverTimestamp() });
-    batch.set(doc(eventsCol), newDoc({ ...v, ride: keepDrivers(v.ride, e.ride), repeat: null, repeatUntil: null }));
+    const one = { ...v, repeat: null, repeatUntil: null };
+    if (e.kind !== "house") one.ride = keepDrivers(v.ride, e.ride);
+    batch.set(doc(col), newDoc(one));
     batch.commit().catch(saveError);
   }
 }
 
-// これ以降すべて変える：最初の日からなら元の予定を直す。途中からなら、前の日で終わらせて新しく作る
-async function saveFuture(e, v) {
+// これ以降すべて変える：最初の日からなら元を直す。途中からなら、前の日で終わらせて新しく作る
+async function saveFuture(e, v, col) {
   const s = e.series;
-  const tidy = (x) => ({ ...x, endDate: null, ride: x.ride });
+  const tidy = (x) => (e.kind === "house" ? x : { ...x, endDate: null });
   if (editDay <= s.date) {
-    updateDoc(doc(eventsCol, s.id), { ...tidy(v), updatedAt: serverTimestamp() }).catch(saveError);
+    updateDoc(doc(col, s.id), { ...tidy(v), updatedAt: serverTimestamp() }).catch(saveError);
     return;
   }
   const until = shiftDay(editDay, -1);
   const batch = writeBatch(db);
-  batch.update(doc(eventsCol, s.id), { repeat: { ...s.repeat, until }, repeatUntil: until, updatedAt: serverTimestamp() });
-  const newRef = doc(eventsCol);
+  batch.update(doc(col, s.id), { repeat: { ...s.repeat, until }, repeatUntil: until, updatedAt: serverTimestamp() });
+  const newRef = doc(col);
   batch.set(newRef, newDoc(tidy(v)));
-  // その日以降に決めた送迎の担当などを、新しい予定へ引き継ぐ（日付を動かしたときは引き継がない）
+  // その日以降に決めた送迎の担当などを、新しい方へ引き継ぐ（日付を動かしたときは引き継がない）
   if (v.repeat && v.date === editDay) {
     const snap = await getDocs(query(overridesCol, where("seriesId", "==", s.id)));
     snap.forEach((d) => {
@@ -947,14 +1094,17 @@ async function saveFuture(e, v) {
 $("deleteEvent").addEventListener("click", async () => {
   const e = editTarget;
   if (!e) return;
+  const col = colOf(e);
+  const name = e.kind === "house" ? houseName(e) : e.title;
   try {
-    if (!e.series) {
-      const ok = await choose("予定を削除", `「${e.title}」を削除しますか？`, [{ value: "yes", label: "削除する", cls: "danger" }]);
+    if (!e.series || !editDay) {
+      const ok = await choose("削除", `「${name}」を${isSeries(e.series || e) ? "くり返しごと" : ""}削除しますか？`,
+        [{ value: "yes", label: "削除する", cls: "danger" }]);
       if (!ok) return;
-      deleteDoc(doc(eventsCol, e.id)).catch(saveError);
+      deleteDoc(doc(col, e.series ? e.series.id : e.id)).catch(saveError);
     } else {
       const s = e.series;
-      const scope = await choose("くり返しの予定を削除", `${e.title}（${dateLabel(editDay)}）`,
+      const scope = await choose("くり返しを削除", `${name}（${dateLabel(editDay)}）`,
         scopeOptions("削除").map((o) => ({ ...o, cls: "danger" })));
       if (!scope) return;
       if (scope === "this") {
@@ -962,10 +1112,10 @@ $("deleteEvent").addEventListener("click", async () => {
           seriesId: s.id, date: editDay, cancelled: true, updatedBy: uid(), updatedAt: serverTimestamp(),
         }).catch(saveError);
       } else if (editDay <= s.date) {
-        deleteDoc(doc(eventsCol, s.id)).catch(saveError);
+        deleteDoc(doc(col, s.id)).catch(saveError);
       } else {
         const until = shiftDay(editDay, -1);
-        updateDoc(doc(eventsCol, s.id), { repeat: { ...s.repeat, until }, repeatUntil: until, updatedAt: serverTimestamp() })
+        updateDoc(doc(col, s.id), { repeat: { ...s.repeat, until }, repeatUntil: until, updatedAt: serverTimestamp() })
           .catch(saveError);
       }
     }
@@ -974,6 +1124,27 @@ $("deleteEvent").addEventListener("click", async () => {
     saveError(err);
   }
 });
+
+// ---------- 家のことの一覧（メニューから） ----------
+// 設定の一覧なので、この画面を開いている間だけ家のことを全部読む
+const houseDialog = $("houseDialog");
+let stopHouseList = null;
+function openHouseList() {
+  $("houseList").replaceChildren(h("li", { class: "empty" }, "読み込み中…"));
+  stopHouseList = onSnapshot(houseCol, (snap) => {
+    const items = snap.docs.map((d) => ({ id: d.id, kind: "house", ...d.data() }))
+      .filter((x) => isSeries(x) ? x.repeatUntil >= ymd(new Date()) : x.date >= ymd(new Date()))
+      .sort((a, b) => HOUSE_TYPES.indexOf(houseType(a.type)) - HOUSE_TYPES.indexOf(houseType(b.type)) || (a.date < b.date ? -1 : 1));
+    $("houseList").replaceChildren(...(items.length ? items.map((x) => h("li", {}, h("button", {
+      type: "button", class: "house-row", onclick: () => openEditor(x, null),
+    }, houseIcon(x, 22), h("span", { class: "house-row-name" }, houseName(x)),
+      h("span", { class: "house-row-when" }, repeatText(x)), h("span", { "aria-hidden": "true" }, "›")))) :
+      [h("li", { class: "empty" }, "まだありません。「＋ 家のことを追加」から入れてください")]));
+  }, (err) => console.error(err));
+  houseDialog.showModal();
+}
+houseDialog.addEventListener("close", () => { if (stopHouseList) stopHouseList(); stopHouseList = null; });
+$("addHouse").addEventListener("click", () => openEditor(null, null, "house"));
 
 // ---------- 参加（招待コード＋自分を選ぶ） ----------
 const joinScreen = $("joinScreen");
@@ -1006,6 +1177,7 @@ $("meBtn").addEventListener("click", () => {
 });
 $("openSwitchMe").addEventListener("click", () => { menuDialog.close(); showJoin(true, true); });
 $("openProfiles").addEventListener("click", () => { menuDialog.close(); openProfiles(me); });
+$("openHouse").addEventListener("click", () => { menuDialog.close(); openHouseList(); });
 
 // ---------- 名前とアイコン ----------
 const profileDialog = $("profileDialog");
