@@ -415,3 +415,29 @@ legend, .field > span { font-size: 14px; color: var(--muted); margin-bottom: 6px
 .up-item.has-pending { background: var(--pending-bg); }
 .more { width: 100%; margin-top: 10px; font-weight: 500; }
 .the-end { text-align: center; color: var(--muted); font-size: 12px; margin: 10px 0 0; }
+
+/* 祝日 */
+.hol-name { display: inline-block; margin-left: 8px; font-size: 12px; font-weight: 700; color: #dc2626; }
+.week .day .hol-name { display: block; margin: 0; font-size: 9px; line-height: 1.2; word-break: break-all; }
+.mhol { font-size: 8px; line-height: 1.1; color: #dc2626; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.mcell { grid-template-rows: auto auto 1fr; }
+
+/* 休み */
+.off-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -4px 0 12px; font-size: 14px; color: var(--muted); }
+.off-who { display: inline-flex; align-items: center; gap: 4px; color: var(--c); font-weight: 700; }
+.off-badge { display: inline-block; font-size: 11px; font-weight: 700; color: var(--muted); background: var(--line); border-radius: 6px; padding: 0 6px; margin-left: auto; }
+.week td.is-off { background: repeating-linear-gradient(135deg, #f1f2f4 0 6px, #e9ebee 6px 12px); }
+.week td .off-badge { display: block; width: fit-content; margin: 0 auto 4px; }
+.sub-title { font-size: 15px; margin: 20px 0 8px; color: var(--muted); font-weight: 500; }
+.off-editor { list-style: none; margin: 0; padding: 0; background: var(--card); border-radius: var(--radius); overflow: hidden; }
+.off-row { display: grid; grid-template-columns: 28px 1fr auto auto; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); }
+.off-row:first-child { border-top: 0; }
+.off-name { font-weight: 700; color: var(--c); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.off-state { font-size: 14px; text-align: right; }
+.off-state small { display: block; font-size: 10px; color: var(--pending-text); }
+.off-row.is-off .off-state { font-weight: 700; }
+.off-btn { padding: 0 10px; font-size: 13px; font-weight: 500; }
+.offday-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.offday { min-height: var(--tap); border: 2px solid var(--c); border-radius: 10px; background: var(--card); color: var(--c); font-weight: 700; cursor: pointer; padding: 0; }
+.offday[aria-pressed="true"] { background: var(--c); color: #fff; }
+.hint { font-size: 12px; color: var(--muted); margin: 4px 0 0; }

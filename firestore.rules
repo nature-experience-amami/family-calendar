@@ -7,7 +7,8 @@ rules_version = '2';
 //   families/{familyId}/members/{uid}    参加した端末 { member, inviteCode, joinedAt }
 //   families/{familyId}/events/{eventId} 予定と送迎の担当
 //     { member, title, date, endDate, allDay, start, end, ride, createdBy, createdAt, updatedAt }
-//   families/{familyId}/profiles/{memberId} 名前とアイコン { name, icon, updatedBy, updatedAt }
+//   families/{familyId}/profiles/{memberId} 名前とアイコン・休みの決まり { name, icon, offDays, holidayOff, updatedBy, updatedAt }
+//   families/{familyId}/dayoffs/{日付_人}  その日だけの休みの変更 { member, date, off, updatedBy, updatedAt }
 //
 // 家族は固定ID（father / mother / son / daughter）で表す。
 // 以前の版で保存された予定の papa / mama も読み書きできるように残している。
@@ -154,17 +155,41 @@ service cloud.firestore {
 
       allow create, update: if isMember(familyId)
         && validMember(memberId)
-        && request.resource.data.keys().hasOnly(['name', 'icon', 'updatedBy', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['name', 'icon', 'offDays', 'holidayOff', 'updatedBy', 'updatedAt'])
         && request.resource.data.keys().hasAll(['name', 'icon', 'updatedBy', 'updatedAt'])
         && request.resource.data.name is string
         && request.resource.data.name.size() >= 1
         && request.resource.data.name.size() <= 10
         && !request.resource.data.name.matches('^\\s*$')
         && request.resource.data.icon in ['cat', 'rabbit', 'bird', 'fish', 'star', 'flower', 'sun', 'moon']
+        // 休みの決まり（無くてもよい）：いつも休みの曜日（0＝日〜6＝土）と、祝日は休みか
+        && (!('offDays' in request.resource.data)
+          || (request.resource.data.offDays is list
+            && request.resource.data.offDays.size() <= 7
+            && request.resource.data.offDays.hasOnly([0, 1, 2, 3, 4, 5, 6])))
+        && (!('holidayOff' in request.resource.data) || request.resource.data.holidayOff is bool)
         && request.resource.data.updatedBy == request.auth.uid
         && request.resource.data.updatedAt == request.time;
 
       allow delete: if false;
+    }
+
+    // その日だけの休みの変更：ID は「日付_人」（例 2026-11-03_father）
+    // off＝true ならその日は休み、false なら仕事・学校。いつもどおりに戻すときは消す
+    match /families/{familyId}/dayoffs/{dayoffId} {
+      allow read: if isMember(familyId);
+
+      allow create, update: if isMember(familyId)
+        && request.resource.data.keys().hasOnly(['member', 'date', 'off', 'updatedBy', 'updatedAt'])
+        && request.resource.data.keys().hasAll(['member', 'date', 'off', 'updatedBy', 'updatedAt'])
+        && validMember(request.resource.data.member)
+        && isDate(request.resource.data.date)
+        && dayoffId == request.resource.data.date + '_' + request.resource.data.member
+        && request.resource.data.off is bool
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.updatedAt == request.time;
+
+      allow delete: if isMember(familyId);
     }
 
     // それ以外は全部だめ

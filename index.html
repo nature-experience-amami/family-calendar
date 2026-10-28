@@ -144,7 +144,7 @@
     <form method="dialog" class="menu">
       <h2 id="menuTitle">メニュー</h2>
       <div class="actions column">
-        <button type="button" id="openProfiles" class="btn">名前とアイコン</button>
+        <button type="button" id="openProfiles" class="btn">名前・アイコン・休み</button>
         <button type="button" id="openSwitchMe" class="btn">自分を変える</button>
         <button type="submit" class="btn ghost">閉じる</button>
       </div>
@@ -154,7 +154,7 @@
   <!-- 名前とアイコン -->
   <dialog id="profileDialog" class="sheet">
     <form id="profileForm" novalidate>
-      <h2>名前とアイコン</h2>
+      <h2>名前・アイコン・休み</h2>
       <div id="whoTabs" class="who-tabs" role="group" aria-label="誰を変えるか"></div>
       <div id="profilePreview" class="preview" aria-live="polite"></div>
       <label class="field">
@@ -165,6 +165,16 @@
         <legend>アイコン</legend>
         <div id="iconGrid" class="icon-grid" role="radiogroup" aria-label="アイコン"></div>
       </fieldset>
+      <fieldset>
+        <legend>いつも休みの曜日</legend>
+        <div id="offDayGrid" class="offday-grid" role="group" aria-label="いつも休みの曜日"></div>
+      </fieldset>
+      <label class="switch">
+        <input id="holidayOffToggle" type="checkbox">
+        <span class="slider" aria-hidden="true"></span>
+        <span>祝日は休み</span>
+      </label>
+      <p class="hint">決まりと違う日（祝日の出勤・振替の休み・土曜の登校日など）は、月の表示で日付を押して「お休み」で変えられます。</p>
       <p id="profileError" class="error" role="alert"></p>
       <div class="actions">
         <button type="button" id="closeProfiles" class="btn ghost">閉じる</button>

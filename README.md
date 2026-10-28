@@ -25,8 +25,14 @@
   - 「送迎が必要」をオンにすると行き（送り）/帰り（お迎え）と時間を入力。送りの初期値は開始時間、お迎えの初期値は終了時間
 - 一覧の時間は「終日」「9:00〜」「9:00〜15:00」のように入っている分だけ表示。終日の予定は時間付きより上
 - 送迎が未定の予定は黄色で「誰が行く？」。押すと「父が行く／母が行く」で確定（確定後はグレー、取り消しも可）
+- 祝日：振替休日・国民の休日も含めてアプリの中で計算（`holidays.js`、2020〜2099年）。月の表示は赤い日付と名前、週・今日の見出しにも名前
+- 休みの日：
+  - いつもの決まり（休みの曜日・祝日は休みか）は「名前・アイコン・休み」で人ごとに設定
+    - 最初の決まり：父＝土日休み・祝日は仕事／母＝火水休み・祝日は仕事／長男・長女＝土日休み・祝日は休み
+  - 決まりと違う日（父の祝日休み、母の振替休み・出勤、子どもの土曜登校と月曜の休みなど）は、月の表示で日付を押して「お休み」で切り替え。いつもどおりに戻すと変更は消える
+  - 表示：今日の見出しの下に「お休み」、週は休みの人の欄に「休」、家族のカードに「今日はお休み」
 - 右上の「自分」ボタンのメニュー
-  - 名前とアイコン：4人それぞれの名前（1〜10文字）とアイコン（8種類）を変えられる。家族全員の画面にすぐ反映
+  - 名前・アイコン・休み：4人それぞれの名前（1〜10文字）とアイコン（8種類）、休みの決まりを変えられる。家族全員の画面にすぐ反映
   - 自分を変える（招待コードがもう一度必要）
 
 家族の色：父＝青、母＝橙、長男＝緑、長女＝紫
@@ -41,6 +47,7 @@
 | `style.css` | 見た目（色・ボタン44px以上・Noto Sans JP） |
 | `app.js` | Firebase への接続、画面の切り替え・追加・送迎・名前とアイコンの処理 |
 | `icons.js` | 家族のアイコン8種類（線画のSVG） |
+| `holidays.js` | 日本の祝日の計算（振替休日・国民の休日を含む） |
 | `manifest.json` | ホーム画面に追加したときのアプリ名とアイコン |
 | `icons/` | アプリのアイコン（`icon.svg`、iPhone用 `apple-touch-icon.png` 180px、`icon-192.png`、`icon-512.png`） |
 | `firebase-config.js` | Firebase の接続先（公開してよい値）と家族グループ名 |
@@ -52,7 +59,8 @@
 families/home/private/invite      招待コード { code }（アプリからは読めない）
 families/home/members/{端末のID}   参加した端末 { member, inviteCode, joinedAt }
 families/home/events/{予定のID}    予定 { member, title, date, endDate, allDay, start, end, ride, createdBy, createdAt, updatedAt }
-families/home/profiles/{father など} 名前とアイコン { name, icon, updatedBy, updatedAt }
+families/home/profiles/{father など} 名前とアイコン・休みの決まり { name, icon, offDays, holidayOff, updatedBy, updatedAt }
+families/home/dayoffs/{日付_人}    その日だけの休みの変更 { member, date, off, updatedBy, updatedAt }
 ```
 
 ## 読み込み

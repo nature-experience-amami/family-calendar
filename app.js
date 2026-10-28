@@ -5,18 +5,20 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator,
-  doc, collection, query, where, orderBy, limit, onSnapshot, getDoc, setDoc, addDoc, updateDoc, serverTimestamp,
+  doc, collection, query, where, orderBy, limit, onSnapshot, getDoc, setDoc, addDoc, updateDoc, deleteDoc, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 import { firebaseConfig, FAMILY_ID } from "./firebase-config.js";
 import { ICONS, iconSvg, isIcon } from "./icons.js";
+import { holidayName } from "./holidays.js";
 
 // 予定や送迎の担当は固定ID（father / mother / son / daughter）でひもづける。
-// 名前とアイコンは profiles に保存され、変えても予定はずれない。
+// 名前とアイコン・休みの決まりは profiles に保存され、変えても予定はずれない。
+// offDays：いつも休みの曜日（0＝日〜6＝土）、holidayOff：祝日は休みか、work：休みでない日の呼び方
 const MEMBERS = [
-  { id: "father", name: "父", icon: "sun" },
-  { id: "mother", name: "母", icon: "flower" },
-  { id: "son", name: "長男", icon: "fish" },
-  { id: "daughter", name: "長女", icon: "cat" },
+  { id: "father", name: "父", icon: "sun", offDays: [0, 6], holidayOff: false, work: "仕事" },
+  { id: "mother", name: "母", icon: "flower", offDays: [2, 3], holidayOff: false, work: "仕事" },
+  { id: "son", name: "長男", icon: "fish", offDays: [0, 6], holidayOff: true, work: "学校" },
+  { id: "daughter", name: "長女", icon: "cat", offDays: [0, 6], holidayOff: true, work: "学校" },
 ];
 // 以前の版のID（papa / mama）で保存された予定も、そのまま読めるようにする
 const OLD_IDS = { papa: "father", mama: "mother" };
@@ -32,8 +34,25 @@ const profile = (id) => {
   return {
     name: typeof p.name === "string" && p.name ? p.name : base.name,
     icon: isIcon(p.icon) ? p.icon : base.icon,
+    offDays: Array.isArray(p.offDays) ? p.offDays : base.offDays || [],
+    holidayOff: typeof p.holidayOff === "boolean" ? p.holidayOff : !!base.holidayOff,
   };
 };
+const workWord = (id) => (MEMBERS.find((m) => m.id === id) || { work: "仕事" }).work;
+
+// ---------- 休みの日 ----------
+// いつもの決まり（曜日・祝日）に、その日だけの変更（dayoffs）を重ねて決める
+let dayoffs = {}; // "2026-11-03_father" → { off: true / false }
+const usualOff = (member, day) => {
+  const p = profile(member);
+  return p.offDays.includes(new Date(day + "T00:00").getDay()) || (p.holidayOff && !!holidayName(day));
+};
+const changeOf = (member, day) => dayoffs[`${day}_${member}`];
+const isOff = (member, day) => {
+  const c = changeOf(member, day);
+  return c ? c.off : usualOff(member, day);
+};
+const offMembers = (day) => MEMBERS.filter((m) => isOff(m.id, day));
 const memberName = (id) => profile(id).name;
 // 文字数は Firestore のルールと同じ数え方（絵文字は2文字になることがある）
 const charCount = (s) => s.length;
@@ -52,6 +71,7 @@ if (window.FAMILY_CALENDAR_EMULATOR) {
 const memberRef = (uid) => doc(db, "families", FAMILY_ID, "members", uid);
 const eventsCol = collection(db, "families", FAMILY_ID, "events");
 const profilesCol = collection(db, "families", FAMILY_ID, "profiles");
+const dayoffsCol = collection(db, "families", FAMILY_ID, "dayoffs");
 
 // ---------- 日付のヘルパー ----------
 const pad = (n) => String(n).padStart(2, "0");
@@ -199,6 +219,40 @@ function navBar(title, prevText, nextText, backText, onMove, atHome) {
     h("button", { type: "button", class: "btn nav-home", disabled: atHome, onclick: () => onMove(0) }, backText));
 }
 
+// ---------- 祝日と休みの表示（今日・月で共用） ----------
+function dayHeading(day, suffix, cls = "") {
+  const hol = holidayName(day);
+  return h("h2", { class: cls || null }, `${dateLabel(day)} ${suffix}`,
+    hol ? h("span", { class: "hol-name" }, hol) : null);
+}
+function offLine(day) {
+  const off = offMembers(day);
+  if (!off.length) return null;
+  return h("p", { class: "off-line" }, "お休み：",
+    off.map((m) => h("span", { class: `off-who m-${m.id}` }, avatar(m.id, 20), memberName(m.id))));
+}
+// 月の表示で日付を押したときの「お休み」：人ごとに休み／仕事・学校を切り替える
+function offEditor(day) {
+  return h("ul", { class: "off-editor" }, MEMBERS.map((m) => {
+    const off = isOff(m.id, day);
+    const changed = !!changeOf(m.id, day);
+    return h("li", { class: `off-row m-${m.id}${off ? " is-off" : ""}` },
+      avatar(m.id, 28),
+      h("span", { class: "off-name" }, memberName(m.id)),
+      h("span", { class: "off-state" }, off ? "休み" : workWord(m.id), changed ? h("small", {}, "いつもと違う") : null),
+      h("button", { type: "button", class: "btn off-btn", onclick: () => setOff(m.id, day, !off) },
+        off ? `${workWord(m.id)}にする` : "休みにする"));
+  }));
+}
+// いつもの決まりと同じに戻すときは、その日だけの変更を消す
+function setOff(member, day, off) {
+  const ref = doc(dayoffsCol, `${day}_${member}`);
+  const job = off === usualOff(member, day)
+    ? deleteDoc(ref)
+    : setDoc(ref, { member, date: day, off, updatedBy: auth.currentUser.uid, updatedAt: serverTimestamp() });
+  job.catch(saveError);
+}
+
 // ---------- 画面：今日 ----------
 const UPCOMING_STEP = 10;
 let upcomingLimit = UPCOMING_STEP;
@@ -222,7 +276,8 @@ function viewToday() {
       o.pending ? h("span", { class: "flag" }, "送迎 誰が行く？") : null));
   }
   return [
-    h("h2", {}, `${dateLabel(today)} の予定`),
+    dayHeading(today, "の予定"),
+    offLine(today),
     dayCards(dayList(today), "今日の予定はありません"),
     h("h2", { class: "section-title" }, "これからの予定"),
     rows.length ? h("ul", { class: "upcoming" }, items) : h("p", { class: "empty" }, "これからの予定はありません"),
@@ -246,10 +301,13 @@ function viewWeek() {
   const rows = days.map((ds) => {
     const d = new Date(ds + "T00:00");
     const dow = d.getDay();
+    const hol = holidayName(ds);
     return h("tr", { class: ds === today ? "is-today" : null },
-      h("th", { class: `day ${dow === 6 ? "sat" : dow === 0 ? "sun" : ""}`, scope: "row" },
-        WEEKDAYS[dow], h("small", {}, `${d.getMonth() + 1}/${d.getDate()}`)),
-      MEMBERS.map((m) => h("td", {},
+      h("th", { class: `day ${dow === 0 || hol ? "sun" : dow === 6 ? "sat" : ""}`, scope: "row" },
+        WEEKDAYS[dow], h("small", {}, `${d.getMonth() + 1}/${d.getDate()}`),
+        hol ? h("small", { class: "hol-name" }, hol) : null),
+      MEMBERS.map((m) => h("td", { class: isOff(m.id, ds) ? "is-off" : null },
+        isOff(m.id, ds) ? h("span", { class: "off-badge" }, "休") : null,
         dayList(ds, m.id).map((o) =>
           h("div", { class: `mini m-${o.e.member}${o.allDay ? " all-day" : ""}${o.pending ? " has-pending" : ""}` },
             h("b", {}, o.text), " ", o.e.title,
@@ -288,14 +346,16 @@ function viewMonth() {
     const pending = list.some((o) => o.pending);
     const dow = (r.lead + n - 1) % 7;
     const names = who.map((m) => memberName(m.id)).join("・");
+    const hol = holidayName(ds);
     cells.push(h("button", {
       type: "button",
-      class: `mcell${ds === today ? " is-today" : ""}${ds === selectedDay ? " is-selected" : ""}${dow === 0 ? " sun" : dow === 6 ? " sat" : ""}`,
+      class: `mcell${ds === today ? " is-today" : ""}${ds === selectedDay ? " is-selected" : ""}${dow === 0 || hol ? " sun" : dow === 6 ? " sat" : ""}`,
       "aria-pressed": String(ds === selectedDay),
-      "aria-label": `${r.month}月${n}日${names ? "、" + names + "の予定" : "、予定なし"}${pending ? "、送迎が未定" : ""}`,
+      "aria-label": `${r.month}月${n}日${hol ? "（" + hol + "）" : ""}${names ? "、" + names + "の予定" : "、予定なし"}${pending ? "、送迎が未定" : ""}`,
       onclick: () => { selectedDay = ds; render(); },
     },
       h("span", { class: "mnum" }, n),
+      hol ? h("span", { class: "mhol" }, hol) : null,
       pending ? h("span", { class: "mpending", title: "送迎が未定" }, "!") : null,
       h("span", { class: "dots" }, who.map((m) => h("span", { class: `dot m-${m.id}` })))));
   }
@@ -306,8 +366,10 @@ function viewMonth() {
       WEEKDAYS.map((w, i) => h("div", { class: `mhead${i === 0 ? " sun" : i === 6 ? " sat" : ""}` }, w)),
       cells),
     h("p", { class: "legend" }, h("span", { class: "mpending" }, "!"), " は送迎が未定の予定がある日"),
-    h("h2", { class: "section-title" }, `${dateLabel(selectedDay)} の予定`),
+    dayHeading(selectedDay, "の予定", "section-title"),
     dayCards(dayList(selectedDay), "この日の予定はありません"),
+    h("h3", { class: "sub-title" }, "お休み"),
+    offEditor(selectedDay),
   ];
 }
 
@@ -337,7 +399,8 @@ function viewFamily() {
         ? `${nextEv.date !== today ? dateLabel(nextEv.date) + " " : ""}${isAllDay(nextEv) ? "終日" : showTime(nextEv.start) + "〜"}`
         : "";
       return h("section", { class: `member m-${m.id}` },
-        h("h3", {}, avatar(m.id, 40), memberName(m.id)),
+        h("h3", {}, avatar(m.id, 40), memberName(m.id),
+          isOff(m.id, today) ? h("span", { class: "off-badge" }, "今日はお休み") : null),
         slot("いま", nowOcc ? nowOcc.text : "", nowOcc && nowOcc.e),
         slot("つぎ", nextLabel, nextEv, `${FAMILY_DAYS}日先まで予定なし`));
     })),
@@ -384,13 +447,22 @@ function rangeQueries(from, to) {
   };
 }
 
+// その日だけの休みの変更（表示している期間の分）
+const dayoffQuery = (from, to) => ({
+  dayoffs: { kind: "dayoffs", key: `d|${from}|${to}`, q: () => query(dayoffsCol, where("date", ">=", from), where("date", "<=", to)) },
+});
+
 function wantedForView() {
   const today = ymd(new Date());
-  if (current === "week") return rangeQueries(weekStart(), shiftDay(weekStart(), 6));
-  if (current === "month") { const r = monthRange(); return rangeQueries(r.first, r.last); }
-  if (current === "family") return rangeQueries(today, shiftDay(today, FAMILY_DAYS));
+  if (current === "week") {
+    const from = weekStart(), to = shiftDay(weekStart(), 6);
+    return { ...rangeQueries(from, to), ...dayoffQuery(from, to) };
+  }
+  if (current === "month") { const r = monthRange(); return { ...rangeQueries(r.first, r.last), ...dayoffQuery(r.first, r.last) }; }
+  if (current === "family") return { ...rangeQueries(today, shiftDay(today, FAMILY_DAYS)), ...dayoffQuery(today, today) };
   return {
     ...rangeQueries(today, today),
+    ...dayoffQuery(today, today),
     upcoming: {
       key: `u|${today}|${upcomingLimit}`,
       q: () => query(eventsCol, where("date", ">", today), orderBy("date"), limit(upcomingLimit)),
@@ -413,10 +485,12 @@ function watchForView() {
     changed = true;
     // 表示する期間が変わったときは、そろうまで「読み込み中」（「もっと見る」のときは今の表示を残す）
     if (name !== "upcoming") loaded = false;
-    const entry = { key: w.key, docs: null };
+    const entry = { key: w.key, kind: w.kind || "events", docs: null };
     entry.stop = onSnapshot(w.q(), (snap) => {
       if (watching[name] !== entry) return; // もう使っていない問い合わせ
-      entry.docs = snap.docs.map((d) => normEvent({ id: d.id, ...d.data() }));
+      entry.docs = entry.kind === "events"
+        ? snap.docs.map((d) => normEvent({ id: d.id, ...d.data() }))
+        : snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       mergeWatched();
     }, (err) => {
       console.error(err);
@@ -433,8 +507,10 @@ function mergeWatched(draw = true) {
   const all = Object.values(watching);
   if (!all.length || all.some((w) => !w.docs)) return;
   const byId = new Map();
-  for (const w of all) for (const e of w.docs) byId.set(e.id, e);
+  for (const w of all) if (w.kind === "events") for (const e of w.docs) byId.set(e.id, e);
   events = [...byId.values()];
+  dayoffs = {};
+  for (const w of all) if (w.kind === "dayoffs") for (const d of w.docs) if (typeof d.off === "boolean") dayoffs[d.id] = d;
   if (watching.upcoming) {
     upcoming = watching.upcoming.docs;
     upcomingMore = upcoming.length >= upcomingLimit;
@@ -651,6 +727,8 @@ const profileForm = $("profileForm");
 const profileMsg = $("profileError");
 let editing = null;     // 編集中の人
 let editingIcon = null; // 選んでいるアイコン
+let editingOffDays = [];       // 休みの曜日
+let editingHolidayOff = false; // 祝日は休みか
 
 function openProfiles(member) {
   selectProfile(member || "father");
@@ -661,6 +739,8 @@ function selectProfile(member) {
   editing = member;
   const p = profile(member);
   editingIcon = p.icon;
+  editingOffDays = [...p.offDays];
+  editingHolidayOff = p.holidayOff;
   profileForm.name.value = p.name;
   profileMsg.className = "error";
   profileMsg.textContent = "";
@@ -688,7 +768,17 @@ function drawProfileEditor() {
     b.append(iconSvg(icon.id, 28), h("span", {}, icon.name));
     return b;
   }));
+  $("offDayGrid").className = `offday-grid ${color}`;
+  $("offDayGrid").replaceChildren(...WEEKDAYS.map((w, i) => h("button", {
+    type: "button", class: "offday", "aria-pressed": String(editingOffDays.includes(i)), "aria-label": `${w}曜日`,
+    onclick: () => {
+      editingOffDays = editingOffDays.includes(i) ? editingOffDays.filter((x) => x !== i) : [...editingOffDays, i].sort();
+      drawProfileEditor();
+    },
+  }, w)));
+  $("holidayOffToggle").checked = editingHolidayOff;
 }
+$("holidayOffToggle").addEventListener("change", (e) => { editingHolidayOff = e.target.checked; });
 
 profileForm.name.addEventListener("input", () => {
   const typed = profileForm.name.value.trim();
@@ -706,7 +796,8 @@ profileForm.addEventListener("submit", (event) => {
   profileMsg.textContent = "";
   // 電波が弱くても画面にはすぐ出て、つながったときに保存される
   setDoc(doc(profilesCol, who), {
-    name, icon: editingIcon, updatedBy: auth.currentUser.uid, updatedAt: serverTimestamp(),
+    name, icon: editingIcon, offDays: editingOffDays, holidayOff: editingHolidayOff,
+    updatedBy: auth.currentUser.uid, updatedAt: serverTimestamp(),
   }).catch(saveError);
   profileMsg.className = "ok";
   profileMsg.textContent = `${name}を保存しました`;
