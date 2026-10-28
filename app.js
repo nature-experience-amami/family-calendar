@@ -5,10 +5,11 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator,
-  doc, collection, query, where, orderBy, limit, onSnapshot, getDoc, setDoc, addDoc, updateDoc, deleteDoc, serverTimestamp,
+  doc, collection, query, where, orderBy, limit, onSnapshot, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
+  writeBatch, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 import { firebaseConfig, FAMILY_ID } from "./firebase-config.js";
-import { ICONS, iconSvg, isIcon } from "./icons.js";
+import { ICONS, iconSvg, isIcon, repeatSvg } from "./icons.js";
 import { holidayName } from "./holidays.js";
 
 // 予定や送迎の担当は固定ID（father / mother / son / daughter）でひもづける。
@@ -72,6 +73,7 @@ const memberRef = (uid) => doc(db, "families", FAMILY_ID, "members", uid);
 const eventsCol = collection(db, "families", FAMILY_ID, "events");
 const profilesCol = collection(db, "families", FAMILY_ID, "profiles");
 const dayoffsCol = collection(db, "families", FAMILY_ID, "dayoffs");
+const overridesCol = collection(db, "families", FAMILY_ID, "overrides");
 
 // ---------- 日付のヘルパー ----------
 const pad = (n) => String(n).padStart(2, "0");
@@ -176,9 +178,65 @@ function saveError(err) {
     : "保存できませんでした。電波の良いところでもう一度試してください");
 }
 
+// ---------- くり返しの予定 ----------
+// くり返しの予定は1件（元の予定）として保存し、表示している期間の分だけ日ごとに広げる。
+//   repeat：{ freq: "daily" | "weekly" | "monthly", days: [曜日…]（毎週のとき）, until: 終わりの日 or null }
+//   repeatUntil：読み込みで探すための終わりの日（ずっと続くなら "9999-12-31"）
+// その日だけの変更（内容・送迎の担当・削除）は overrides/{元の予定のID}_{日付} に保存する。
+const FOREVER = "9999-12-31";
+const REPEAT_AHEAD = 92; // 「これからの予定」に、くり返しの予定を何日先まで出すか
+const FREQ_NAME = { daily: "毎日", weekly: "毎週", monthly: "毎月" };
+const isSeries = (e) => !!(e && e.repeat && FREQ_NAME[e.repeat.freq]);
+const copyRide = (r) => (r ? JSON.parse(JSON.stringify(r)) : null);
+let overrides = {}; // "元の予定のID_日付" → その日だけの変更
+
+function repeatsOn(s, day) {
+  if (day < s.date || (s.repeat.until && day > s.repeat.until)) return false;
+  const d = new Date(day + "T00:00");
+  if (s.repeat.freq === "daily") return true;
+  if (s.repeat.freq === "weekly") return (s.repeat.days || []).includes(d.getDay());
+  return d.getDate() === Number(s.date.slice(8, 10)); // 毎月：同じ日付（その日が無い月は飛ばす）
+}
+
+// くり返しの予定の、ある日の分（その日だけの変更を重ねる）。削除された日は null
+function instanceOf(s, day) {
+  const ov = overrides[`${s.id}_${day}`];
+  if (ov && ov.cancelled) return null;
+  const pick = (k) => (ov && k in ov ? ov[k] : s[k]);
+  return normEvent({
+    id: s.id, series: s, day, date: day, endDate: null, repeat: s.repeat,
+    member: pick("member"), title: pick("title"), allDay: pick("allDay") === true,
+    start: pick("start") || null, end: pick("end") || null, ride: copyRide(pick("ride")),
+  });
+}
+
+function expandSeries(list, from, to) {
+  const out = [];
+  for (const s of list) {
+    const last = s.repeat.until && s.repeat.until < to ? s.repeat.until : to;
+    for (let day = s.date > from ? s.date : from; day <= last; day = shiftDay(day, 1)) {
+      if (!repeatsOn(s, day)) continue;
+      const inst = instanceOf(s, day);
+      if (inst) out.push(inst);
+    }
+  }
+  return out;
+}
+
+const repeatMark = () => h("span", { class: "repeat-mark", title: "くり返しの予定", "aria-label": "くり返し" }, repeatSvg(13));
+
 // ---------- 送迎の担当を保存 ----------
 // 以前の版のID（papa / mama）が残っていたら、ついでに新しいIDに直して保存する
 function setDriver(e, key, driver) {
+  // くり返しの予定は、その日の分だけに保存する（毎週同じ人とは限らないため）
+  if (e.series) {
+    const ride = copyRide(e.ride);
+    ride[key].driver = driver;
+    setDoc(doc(overridesCol, `${e.series.id}_${e.day}`), {
+      seriesId: e.series.id, date: e.day, ride, updatedBy: auth.currentUser.uid, updatedAt: serverTimestamp(),
+    }, { merge: true }).catch(saveError);
+    return;
+  }
   const patch = { member: e.member, [`ride.${key}.driver`]: driver, updatedAt: serverTimestamp() };
   for (const k of legs(e)) if (k !== key) patch[`ride.${k}.driver`] = e.ride[k].driver;
   updateDoc(doc(eventsCol, e.id), patch).catch(saveError);
@@ -200,7 +258,9 @@ function rideRow(e, key) {
 // ---------- 予定カード（今日・月の下の一覧で共用） ----------
 function eventCard(o) {
   return h("li", { class: `event m-${o.e.member}${o.allDay ? " all-day" : ""}` },
-    h("div", { class: "event-head" }, h("span", { class: "time" }, o.text), label(o.e.member)),
+    h("div", { class: "event-head" }, h("span", { class: "time" }, o.text), label(o.e.member),
+      isSeries(o.e) ? repeatMark() : null,
+      h("button", { type: "button", class: "edit-btn", onclick: () => openEditor(o.e, o.day), "aria-label": `「${o.e.title}」を編集` }, "編集")),
     h("div", { class: "event-title" }, o.e.title),
     isMultiDay(o.e) ? h("div", { class: "range" }, rangeText(o.e)) : null,
     o.legs.length ? h("div", { class: "rides" }, o.legs.map((k) => rideRow(o.e, k))) : null);
@@ -268,12 +328,16 @@ function viewToday() {
   const items = [];
   for (const o of rows) {
     if (o.day !== lastDate) { items.push(h("li", { class: "up-date" }, dateLabel(o.day))); lastDate = o.day; }
-    items.push(h("li", { class: `up-item m-${o.e.member}${o.pending ? " has-pending" : ""}` },
+    items.push(h("li", {}, h("button", {
+      type: "button", class: `up-item m-${o.e.member}${o.pending ? " has-pending" : ""}`,
+      onclick: () => openEditor(o.e, o.day),
+    },
       h("span", { class: "time" }, o.text),
       avatar(o.e.member, 24),
       h("span", { class: "up-title" }, o.e.title,
-        isMultiDay(o.e) ? h("small", {}, `〜${dateLabel(lastDay(o.e))}`) : null),
-      o.pending ? h("span", { class: "flag" }, "送迎 誰が行く？") : null));
+        isMultiDay(o.e) ? h("small", {}, `〜${dateLabel(lastDay(o.e))}`) : null,
+        isSeries(o.e) ? repeatMark() : null),
+      o.pending ? h("span", { class: "flag" }, "送迎 誰が行く？") : null)));
   }
   return [
     dayHeading(today, "の予定"),
@@ -310,7 +374,7 @@ function viewWeek() {
         isOff(m.id, ds) ? h("span", { class: "off-badge" }, "休") : null,
         dayList(ds, m.id).map((o) =>
           h("div", { class: `mini m-${o.e.member}${o.allDay ? " all-day" : ""}${o.pending ? " has-pending" : ""}` },
-            h("b", {}, o.text), " ", o.e.title,
+            h("b", {}, o.text), " ", o.e.title, isSeries(o.e) ? repeatMark() : null,
             o.pending ? h("span", { class: "flag" }, "送迎 誰が行く？") : null)))));
   });
 
@@ -452,17 +516,37 @@ const dayoffQuery = (from, to) => ({
   dayoffs: { kind: "dayoffs", key: `d|${from}|${to}`, q: () => query(dayoffsCol, where("date", ">=", from), where("date", "<=", to)) },
 });
 
+// くり返しの予定：期間の始まりより後まで続くもの（repeatUntil で探す）と、その日だけの変更
+const repeatQueries = (from, to) => ({
+  series: { key: `r|${from}`, q: () => query(eventsCol, where("repeatUntil", ">=", from)) },
+  overrides: {
+    kind: "overrides", key: `o|${from}|${to}`,
+    q: () => query(overridesCol, where("date", ">=", from), where("date", "<=", to)),
+  },
+});
+
+let viewRange = { from: "", to: "" }; // 予定を日ごとに広げる期間
 function wantedForView() {
   const today = ymd(new Date());
   if (current === "week") {
     const from = weekStart(), to = shiftDay(weekStart(), 6);
-    return { ...rangeQueries(from, to), ...dayoffQuery(from, to) };
+    viewRange = { from, to };
+    return { ...rangeQueries(from, to), ...dayoffQuery(from, to), ...repeatQueries(from, to) };
   }
-  if (current === "month") { const r = monthRange(); return { ...rangeQueries(r.first, r.last), ...dayoffQuery(r.first, r.last) }; }
-  if (current === "family") return { ...rangeQueries(today, shiftDay(today, FAMILY_DAYS)), ...dayoffQuery(today, today) };
+  if (current === "month") {
+    const r = monthRange();
+    viewRange = { from: r.first, to: r.last };
+    return { ...rangeQueries(r.first, r.last), ...dayoffQuery(r.first, r.last), ...repeatQueries(r.first, r.last) };
+  }
+  if (current === "family") {
+    viewRange = { from: today, to: shiftDay(today, FAMILY_DAYS) };
+    return { ...rangeQueries(today, viewRange.to), ...dayoffQuery(today, today), ...repeatQueries(today, viewRange.to) };
+  }
+  viewRange = { from: today, to: today };
   return {
     ...rangeQueries(today, today),
     ...dayoffQuery(today, today),
+    ...repeatQueries(today, shiftDay(today, REPEAT_AHEAD)),
     upcoming: {
       key: `u|${today}|${upcomingLimit}`,
       q: () => query(eventsCol, where("date", ">", today), orderBy("date"), limit(upcomingLimit)),
@@ -508,12 +592,26 @@ function mergeWatched(draw = true) {
   if (!all.length || all.some((w) => !w.docs)) return;
   const byId = new Map();
   for (const w of all) if (w.kind === "events") for (const e of w.docs) byId.set(e.id, e);
-  events = [...byId.values()];
   dayoffs = {};
   for (const w of all) if (w.kind === "dayoffs") for (const d of w.docs) if (typeof d.off === "boolean") dayoffs[d.id] = d;
+  overrides = {};
+  for (const w of all) if (w.kind === "overrides") for (const d of w.docs) overrides[d.id] = d;
+  // 普通の予定はそのまま、くり返しの予定は表示している期間の日ごとに広げる
+  const docs = [...byId.values()];
+  const seriesList = docs.filter(isSeries);
+  events = [...docs.filter((e) => !isSeries(e)), ...expandSeries(seriesList, viewRange.from, viewRange.to)];
   if (watching.upcoming) {
-    upcoming = watching.upcoming.docs;
-    upcomingMore = upcoming.length >= upcomingLimit;
+    // 明日以降：普通の予定（件数で区切って読む）と、くり返しの予定（REPEAT_AHEAD 日先まで）を合わせて日付順に
+    const raw = watching.upcoming.docs;
+    const rawMore = raw.length >= upcomingLimit;
+    const today = ymd(new Date());
+    let horizon = shiftDay(today, REPEAT_AHEAD);
+    if (rawMore && raw.length && raw[raw.length - 1].date < horizon) horizon = raw[raw.length - 1].date;
+    const list = [...raw.filter((e) => !isSeries(e)), ...expandSeries(seriesList, shiftDay(today, 1), horizon)]
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1
+        : (isAllDay(b) - isAllDay(a)) || ((a.start ? toMinutes(a.start) : 0) - (b.start ? toMinutes(b.start) : 0))));
+    upcoming = list.slice(0, upcomingLimit);
+    upcomingMore = rawMore || list.length > upcomingLimit;
   }
   loaded = true;
   if (draw) render();
@@ -589,7 +687,7 @@ function memberPicker(container, onPick, useDefault = false) {
   return { get: () => picked, set };
 }
 
-// ---------- 予定の追加 ----------
+// ---------- 予定の追加・編集・削除 ----------
 const addDialog = $("addDialog");
 const form = $("addForm");
 const addPicker = memberPicker($("memberPicker"));
@@ -599,6 +697,11 @@ const errEl = $("formError");
 const allDayToggle = $("allDayToggle");
 const timeFields = $("timeFields");
 const leg = (time) => ({ time, driver: null });
+
+let editTarget = null; // 編集中の予定（新しく追加するときは null）
+let editDay = null;    // 編集中の日（くり返しの予定のときは、押した日）
+let repeatFreq = "none";
+let repeatDays = [];
 
 // 送り・お迎えの時間の初期値：送り＝開始時間、お迎え＝終了時間（手で変えたら、それ以降は上書きしない）
 let goTouched = false;
@@ -611,11 +714,38 @@ function syncRideTimes() {
 form.goTime.addEventListener("input", () => { goTouched = true; });
 form.backTime.addEventListener("input", () => { backTouched = true; });
 
+// くり返しの入力
+function drawRepeat() {
+  $("repeatSeg").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.freq === repeatFreq)));
+  const on = repeatFreq !== "none";
+  $("repeatDays").hidden = repeatFreq !== "weekly";
+  $("repeatUntilBox").hidden = !on;
+  $("endDateBox").hidden = on; // くり返しの予定は1日ずつ（何日か続く予定にはしない）
+  const md = form.date.value ? Number(form.date.value.slice(8, 10)) : null;
+  $("repeatMonthly").hidden = repeatFreq !== "monthly";
+  $("repeatMonthly").textContent = md ? `毎月${md}日（${md}日が無い月は飛ばします）` : "";
+  $("repeatDays").replaceChildren(...WEEKDAYS.map((w, i) => h("button", {
+    type: "button", class: "offday", "aria-pressed": String(repeatDays.includes(i)), "aria-label": `${w}曜日`,
+    onclick: () => {
+      repeatDays = repeatDays.includes(i) ? repeatDays.filter((x) => x !== i) : [...repeatDays, i].sort();
+      drawRepeat();
+    },
+  }, w)));
+}
+$("repeatSeg").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+  repeatFreq = b.dataset.freq;
+  if (repeatFreq === "weekly" && !repeatDays.length && form.date.value) repeatDays = [new Date(form.date.value + "T00:00").getDay()];
+  drawRepeat();
+  errEl.textContent = timeProblem();
+}));
+
 // 日時の確認（入力のたびと、保存のときに使う）
 function timeProblem() {
-  const date = form.date.value, endDate = form.endDate.value;
+  const date = form.date.value;
+  const endDate = repeatFreq === "none" ? form.endDate.value : "";
   if (endDate && date && endDate < date) return "終わりの日を確認してください";
   if (endDate && date && daysBetween(date, endDate) > SPAN_MAX) return `終わりの日は${SPAN_MAX}日先までにしてください`;
+  if (repeatFreq !== "none" && form.repeatUntil.value && date && form.repeatUntil.value < date) return "くり返しの終わりの日を確認してください";
   if (allDayToggle.checked) return "";
   const start = form.start.value, end = form.end.value;
   const oneDay = !endDate || endDate === date;
@@ -625,9 +755,10 @@ function timeProblem() {
 }
 function onTimeInput() {
   syncRideTimes();
+  if (repeatFreq === "monthly") drawRepeat();
   errEl.textContent = timeProblem();
 }
-for (const name of ["date", "endDate", "start", "end"]) {
+for (const name of ["date", "endDate", "start", "end", "repeatUntil"]) {
   form[name].addEventListener("input", onTimeInput);
   form[name].addEventListener("change", onTimeInput);
 }
@@ -640,31 +771,78 @@ rideToggle.addEventListener("change", () => {
   syncRideTimes();
 });
 
-$("addBtn").addEventListener("click", () => {
+// 追加（e なし）・編集（e＝押した予定、day＝その日）の画面を開く
+function openEditor(e = null, day = null) {
   form.reset();
-  addPicker.set(me);
-  rideFields.hidden = true;
-  timeFields.hidden = false;
-  goTouched = false;
-  backTouched = false;
+  editTarget = e;
+  editDay = day;
   errEl.textContent = "";
-  form.date.value = ymd(new Date());
+  goTouched = !!e;
+  backTouched = !!e;
+  $("editorTitle").textContent = e ? "予定を編集" : "予定を追加";
+  $("deleteEvent").hidden = !e;
+  const src = e && e.series ? e.series : e;
+  repeatFreq = isSeries(src) ? src.repeat.freq : "none";
+  repeatDays = isSeries(src) && src.repeat.freq === "weekly" ? [...src.repeat.days] : [];
+  if (!e) {
+    addPicker.set(me);
+    form.date.value = ymd(new Date());
+  } else {
+    addPicker.set(e.member);
+    form.title.value = e.title;
+    form.date.value = e.series ? day : e.date;
+    form.endDate.value = !e.series && e.endDate ? e.endDate : "";
+    allDayToggle.checked = isAllDay(e);
+    form.start.value = e.start || "";
+    form.end.value = e.end || "";
+    form.repeatUntil.value = isSeries(src) && src.repeat.until ? src.repeat.until : "";
+    rideToggle.checked = !!e.ride;
+    form.goOn.checked = !!(e.ride && e.ride.go);
+    form.backOn.checked = !!(e.ride && e.ride.back);
+    form.goTime.value = e.ride && e.ride.go ? e.ride.go.time : "";
+    form.backTime.value = e.ride && e.ride.back ? e.ride.back.time : "";
+  }
+  timeFields.hidden = allDayToggle.checked;
+  rideFields.hidden = !rideToggle.checked;
+  drawRepeat();
   addDialog.showModal();
-});
+}
+$("addBtn").addEventListener("click", () => openEditor());
 $("cancelAdd").addEventListener("click", () => addDialog.close());
 
-form.addEventListener("submit", (event) => {
-  event.preventDefault();
+// 選ぶ画面（「この日だけ／これ以降すべて」や削除の確認）。選んだ値を返す（やめたら null）
+const chooseDialog = $("chooseDialog");
+function choose(title, info, options) {
+  return new Promise((resolve) => {
+    $("chooseTitle").textContent = title;
+    $("chooseInfo").textContent = info;
+    const done = (v) => { chooseDialog.close(); resolve(v); };
+    $("chooseButtons").replaceChildren(
+      ...options.map((o) => h("button", { type: "button", class: `btn ${o.cls || ""}`, onclick: () => done(o.value) }, o.label)),
+      h("button", { type: "button", class: "btn ghost", onclick: () => done(null) }, "やめる"));
+    chooseDialog.onclose = () => resolve(null);
+    chooseDialog.showModal();
+  });
+}
+const scopeOptions = (verb) => [
+  { value: "this", label: `この日だけ${verb}` },
+  { value: "future", label: `これ以降すべて${verb}` },
+];
+
+// 入力を読み取る（だめなら errEl に書いて null）
+function readForm() {
   const member = addPicker.get();
   const title = form.title.value.trim();
   if (!member) return void (errEl.textContent = "誰の予定かを選んでください");
   if (!title || !form.date.value) return void (errEl.textContent = "「何」と「いつ」を入れてください");
   const allDay = allDayToggle.checked;
   if (!allDay && !form.start.value) return void (errEl.textContent = "開始時間を入れてください（時間が無ければ「終日」をオン）");
+  if (repeatFreq === "weekly" && !repeatDays.length) return void (errEl.textContent = "くり返す曜日を選んでください");
   const problem = timeProblem();
   if (problem) return void (errEl.textContent = problem);
   const date = form.date.value;
-  const endDate = form.endDate.value && form.endDate.value > date ? form.endDate.value : null;
+  const repeating = repeatFreq !== "none";
+  const endDate = !repeating && form.endDate.value && form.endDate.value > date ? form.endDate.value : null;
 
   let ride = null;
   if (rideToggle.checked) {
@@ -677,16 +855,124 @@ form.addEventListener("submit", (event) => {
     if (goOn) ride.go = leg(form.goTime.value);
     if (backOn) ride.back = leg(form.backTime.value);
   }
-
-  // 電波が弱くても画面にはすぐ出て、つながったときに保存される
-  addDoc(eventsCol, {
+  const until = repeating && form.repeatUntil.value ? form.repeatUntil.value : null;
+  return {
     member, title, date, endDate, allDay,
     start: allDay ? null : form.start.value,
     end: allDay ? null : (form.end.value || null),
     ride,
-    createdBy: auth.currentUser.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
-  }).catch(saveError);
-  addDialog.close();
+    repeat: repeating ? { freq: repeatFreq, days: repeatFreq === "weekly" ? repeatDays : [], until } : null,
+    repeatUntil: repeating ? until || FOREVER : null,
+  };
+}
+
+// 送迎の担当は、同じ行き・帰りが残っていれば引き継ぐ
+function keepDrivers(ride, old) {
+  if (!ride || !old) return ride;
+  for (const k of ["go", "back"]) if (ride[k] && old[k]) ride[k].driver = old[k].driver || null;
+  return ride;
+}
+const uid = () => auth.currentUser.uid;
+const newDoc = (v) => ({ ...v, createdBy: uid(), createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const v = readForm();
+  if (!v) return;
+  const e = editTarget;
+  // 電波が弱くても画面にはすぐ出て、つながったときに保存される（失敗したらお知らせを出す）
+  try {
+    if (!e) {
+      addDoc(eventsCol, newDoc(v)).catch(saveError);
+    } else if (!e.series) {
+      // 普通の予定の編集
+      if (v.repeat) v.endDate = null;
+      updateDoc(doc(eventsCol, e.id), { ...v, ride: v.repeat ? v.ride : keepDrivers(v.ride, e.ride), updatedAt: serverTimestamp() })
+        .catch(saveError);
+    } else {
+      const scope = await choose("くり返しの予定を変える", `${e.title}（${dateLabel(editDay)}）`, scopeOptions("変える"));
+      if (!scope) return;
+      if (scope === "this") await saveThisDay(e, v);
+      else await saveFuture(e, v);
+    }
+    addDialog.close();
+  } catch (err) {
+    saveError(err);
+  }
+});
+
+// この日だけ変える：日付を変えなければ、その日の変更として保存。日付を変えたら、その日を消して普通の予定を作る
+async function saveThisDay(e, v) {
+  const s = e.series;
+  const ref = doc(overridesCol, `${s.id}_${editDay}`);
+  if (v.date === editDay) {
+    setDoc(ref, {
+      seriesId: s.id, date: editDay, cancelled: false,
+      member: v.member, title: v.title, allDay: v.allDay, start: v.start, end: v.end, ride: keepDrivers(v.ride, e.ride),
+      updatedBy: uid(), updatedAt: serverTimestamp(),
+    }).catch(saveError);
+  } else {
+    const batch = writeBatch(db);
+    batch.set(ref, { seriesId: s.id, date: editDay, cancelled: true, updatedBy: uid(), updatedAt: serverTimestamp() });
+    batch.set(doc(eventsCol), newDoc({ ...v, ride: keepDrivers(v.ride, e.ride), repeat: null, repeatUntil: null }));
+    batch.commit().catch(saveError);
+  }
+}
+
+// これ以降すべて変える：最初の日からなら元の予定を直す。途中からなら、前の日で終わらせて新しく作る
+async function saveFuture(e, v) {
+  const s = e.series;
+  const tidy = (x) => ({ ...x, endDate: null, ride: x.ride });
+  if (editDay <= s.date) {
+    updateDoc(doc(eventsCol, s.id), { ...tidy(v), updatedAt: serverTimestamp() }).catch(saveError);
+    return;
+  }
+  const until = shiftDay(editDay, -1);
+  const batch = writeBatch(db);
+  batch.update(doc(eventsCol, s.id), { repeat: { ...s.repeat, until }, repeatUntil: until, updatedAt: serverTimestamp() });
+  const newRef = doc(eventsCol);
+  batch.set(newRef, newDoc(tidy(v)));
+  // その日以降に決めた送迎の担当などを、新しい予定へ引き継ぐ（日付を動かしたときは引き継がない）
+  if (v.repeat && v.date === editDay) {
+    const snap = await getDocs(query(overridesCol, where("seriesId", "==", s.id)));
+    snap.forEach((d) => {
+      const ov = d.data();
+      if (ov.date < editDay) return;
+      batch.set(doc(overridesCol, `${newRef.id}_${ov.date}`), { ...ov, seriesId: newRef.id, updatedBy: uid(), updatedAt: serverTimestamp() });
+    });
+  }
+  batch.commit().catch(saveError);
+}
+
+$("deleteEvent").addEventListener("click", async () => {
+  const e = editTarget;
+  if (!e) return;
+  try {
+    if (!e.series) {
+      const ok = await choose("予定を削除", `「${e.title}」を削除しますか？`, [{ value: "yes", label: "削除する", cls: "danger" }]);
+      if (!ok) return;
+      deleteDoc(doc(eventsCol, e.id)).catch(saveError);
+    } else {
+      const s = e.series;
+      const scope = await choose("くり返しの予定を削除", `${e.title}（${dateLabel(editDay)}）`,
+        scopeOptions("削除").map((o) => ({ ...o, cls: "danger" })));
+      if (!scope) return;
+      if (scope === "this") {
+        setDoc(doc(overridesCol, `${s.id}_${editDay}`), {
+          seriesId: s.id, date: editDay, cancelled: true, updatedBy: uid(), updatedAt: serverTimestamp(),
+        }).catch(saveError);
+      } else if (editDay <= s.date) {
+        deleteDoc(doc(eventsCol, s.id)).catch(saveError);
+      } else {
+        const until = shiftDay(editDay, -1);
+        updateDoc(doc(eventsCol, s.id), { repeat: { ...s.repeat, until }, repeatUntil: until, updatedAt: serverTimestamp() })
+          .catch(saveError);
+      }
+    }
+    addDialog.close();
+  } catch (err) {
+    saveError(err);
+  }
 });
 
 // ---------- 参加（招待コード＋自分を選ぶ） ----------

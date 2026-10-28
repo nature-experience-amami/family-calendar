@@ -60,7 +60,7 @@
   <!-- 予定の追加 -->
   <dialog id="addDialog" class="sheet">
     <form id="addForm" method="dialog" novalidate>
-      <h2>予定を追加</h2>
+      <h2 id="editorTitle">予定を追加</h2>
 
       <fieldset>
         <legend>誰の</legend>
@@ -77,11 +77,27 @@
           <span>いつ（日付）</span>
           <input name="date" type="date" required>
         </label>
-        <label class="field">
+        <label class="field" id="endDateBox">
           <span>終わりの日（任意）</span>
           <input name="endDate" type="date">
         </label>
       </div>
+
+      <fieldset class="repeat-box">
+        <legend>くり返し</legend>
+        <div id="repeatSeg" class="seg" role="radiogroup" aria-label="くり返し">
+          <button type="button" role="radio" data-freq="none">なし</button>
+          <button type="button" role="radio" data-freq="daily">毎日</button>
+          <button type="button" role="radio" data-freq="weekly">毎週</button>
+          <button type="button" role="radio" data-freq="monthly">毎月</button>
+        </div>
+        <div id="repeatDays" class="offday-grid repeat-days" role="group" aria-label="くり返す曜日" hidden></div>
+        <p id="repeatMonthly" class="hint" hidden></p>
+        <label class="field" id="repeatUntilBox" hidden>
+          <span>くり返しの終わりの日（任意。空欄なら続ける）</span>
+          <input name="repeatUntil" type="date">
+        </label>
+      </fieldset>
 
       <label class="switch">
         <input id="allDayToggle" name="allDay" type="checkbox">
@@ -120,9 +136,19 @@
       <p id="formError" class="error" role="alert"></p>
 
       <div class="actions">
+        <button type="button" id="deleteEvent" class="btn danger" hidden>削除</button>
         <button type="button" id="cancelAdd" class="btn ghost">やめる</button>
         <button type="submit" class="btn primary">保存</button>
       </div>
+    </form>
+  </dialog>
+
+  <!-- くり返しの予定の「この日だけ／これ以降すべて」、削除の確認 -->
+  <dialog id="chooseDialog" class="sheet">
+    <form method="dialog">
+      <h2 id="chooseTitle"></h2>
+      <p id="chooseInfo" class="ride-info"></p>
+      <div id="chooseButtons" class="actions column"></div>
     </form>
   </dialog>
 

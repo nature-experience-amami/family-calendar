@@ -8,6 +8,7 @@ rules_version = '2';
 //   families/{familyId}/events/{eventId} 予定と送迎の担当
 //     { member, title, date, endDate, allDay, start, end, ride, createdBy, createdAt, updatedAt }
 //   families/{familyId}/profiles/{memberId} 名前とアイコン・休みの決まり { name, icon, offDays, holidayOff, updatedBy, updatedAt }
+//   families/{familyId}/overrides/{元の予定のID_日付} くり返しの予定のその日だけの変更 { seriesId, date, cancelled, member, title, allDay, start, end, ride, updatedBy, updatedAt }
 //   families/{familyId}/dayoffs/{日付_人}  その日だけの休みの変更 { member, date, off, updatedBy, updatedAt }
 //
 // 家族は固定ID（father / mother / son / daughter）で表す。
@@ -97,14 +98,50 @@ service cloud.firestore {
             && (d.end == null || (isTime(d.end) && (multiDay || d.end >= d.start)))));
     }
 
+    // くり返し（無くてもよい）：{ freq, days, until }。repeatUntil は探すための終わりの日（ずっとなら 9999-12-31）
+    // くり返しの予定は1日ずつ（何日か続く予定にはしない）
+    function validRepeat(d) {
+      let r = d.get('repeat', null);
+      let ru = d.get('repeatUntil', null);
+      return (r == null && ru == null)
+        || (r is map
+          && r.keys().hasOnly(['freq', 'days', 'until'])
+          && r.keys().hasAll(['freq', 'days', 'until'])
+          && r.freq in ['daily', 'weekly', 'monthly']
+          && r.days is list && r.days.size() <= 7 && r.days.hasOnly([0, 1, 2, 3, 4, 5, 6])
+          && (r.freq != 'weekly' || r.days.size() > 0)
+          && (r.until == null || (isDate(r.until) && r.until >= d.date))
+          && ru == (r.until == null ? '9999-12-31' : r.until)
+          && d.get('endDate', null) == null);
+    }
+
     function validEvent(d) {
-      return d.keys().hasOnly(['member', 'title', 'date', 'endDate', 'allDay', 'start', 'end', 'ride', 'createdBy', 'createdAt', 'updatedAt'])
+      return d.keys().hasOnly(['member', 'title', 'date', 'endDate', 'allDay', 'start', 'end', 'ride', 'repeat', 'repeatUntil', 'createdBy', 'createdAt', 'updatedAt'])
         && d.keys().hasAll(['member', 'title', 'date', 'start', 'end', 'ride', 'createdBy', 'createdAt', 'updatedAt'])
         && validEventMember(d.member)
         && d.title is string && d.title.size() > 0 && d.title.size() <= 40
         && isDate(d.date)
         && validWhen(d)
         && validRide(d.ride)
+        && validRepeat(d)
+        && d.updatedAt == request.time;
+    }
+
+    // くり返しの予定の、その日だけの変更（内容・送迎の担当・削除）。ID は「元の予定のID_日付」
+    function validOverride(d, id) {
+      return d.keys().hasOnly(['seriesId', 'date', 'cancelled', 'member', 'title', 'allDay', 'start', 'end', 'ride', 'updatedBy', 'updatedAt'])
+        && d.keys().hasAll(['seriesId', 'date', 'updatedBy', 'updatedAt'])
+        && d.seriesId is string
+        && isDate(d.date)
+        && id == d.seriesId + '_' + d.date
+        && d.get('cancelled', false) is bool
+        && (!('member' in d) || validEventMember(d.member))
+        && (!('title' in d) || (d.title is string && d.title.size() > 0 && d.title.size() <= 40))
+        && (!('allDay' in d) || d.allDay is bool)
+        && (!('start' in d) || d.start == null || isTime(d.start))
+        && (!('end' in d) || d.end == null || isTime(d.end))
+        && (!('ride' in d) || validRide(d.ride))
+        && d.updatedBy == request.auth.uid
         && d.updatedAt == request.time;
     }
 
@@ -145,8 +182,16 @@ service cloud.firestore {
         && request.resource.data.createdBy == resource.data.createdBy
         && request.resource.data.createdAt == resource.data.createdAt;
 
-      // 削除は今の画面に無いので、まだ許可しない
-      allow delete: if false;
+      allow delete: if isMember(familyId);
+    }
+
+    match /families/{familyId}/overrides/{overrideId} {
+      allow read: if isMember(familyId);
+      // 元の予定があるときだけ（同時に作る・終わらせるときのために existsAfter で確かめる）
+      allow create, update: if isMember(familyId)
+        && validOverride(request.resource.data, overrideId)
+        && existsAfter(/databases/$(database)/documents/families/$(familyId)/events/$(request.resource.data.seriesId));
+      allow delete: if isMember(familyId);
     }
 
     // 名前とアイコン：参加している家族なら誰でも4人分を変えられる

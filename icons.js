@@ -63,3 +63,12 @@ export function iconSvg(id, size = 20) {
   svg.innerHTML = icon.svg;
   return svg;
 }
+
+// くり返しの予定の印（2本の矢印の輪）
+export function repeatSvg(size = 14) {
+  const svg = iconSvg("star", size);
+  svg.innerHTML = '<path d="M17 2.5 20.5 6 17 9.5"/><path d="M3.5 11.5V10a4 4 0 0 1 4-4h13"/>' +
+    '<path d="M7 21.5 3.5 18 7 14.5"/><path d="M20.5 12.5V14a4 4 0 0 1-4 4h-13"/>';
+  svg.setAttribute("stroke-width", "2.2");
+  return svg;
+}
